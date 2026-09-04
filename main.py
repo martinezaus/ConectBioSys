@@ -26,15 +26,10 @@ from openpyxl import Workbook
 
 from app.database.database import Database
 from resources.config_relojes import RELOJES
-from app.api.hikvision import HikvisionAdapter
-from app.api.zkteco import ZKTecoAdapter
 from resources.config_app import ESTILO_APP
 from app.api.relojes import ConfiguracionRelojesDialog 
+from resources.marcas_relojes import ADAPTERS
 
-ADAPTERS = {
-	"hikvision": HikvisionAdapter,
-	"zkteco": ZKTecoAdapter
-}
 
 ENCABEZADOS_MARCACIONES = ["Dispositivo", "Empleado", "Fecha y hora", "Tipo de evento", "Método"]
 

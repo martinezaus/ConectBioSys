@@ -269,5 +269,5 @@ class ConfiguracionRelojesDialog(QDialog):
 		self.accept()
 
 	def _ruta_config(self):
-		base = os.path.dirname(os.path.abspath(__file__))
-		return os.path.join(base, "resources", "config_relojes.py")
+		import resources.config_relojes as modulo_config
+		return os.path.abspath(modulo_config.__file__)

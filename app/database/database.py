@@ -1,3 +1,4 @@
+import datetime
 import sqlite3
 from pathlib import Path
 
@@ -110,9 +111,17 @@ class Database:
 
 		conexion.commit()
 		conexion.close()
-
+		
 	def obtener_todas_marcaciones(self, desde=None, hasta=None):
-		pass
+		"""
+		    Devuelve todas las marcaciones guardadas. Si se pasan 'desde'/'hasta'
+		    (YYYY-MM-DD), filtra por ese rango; si no, trae todo el histórico.
+	    """
+		anio_actual = datetime.date.today().year
+		desde = desde or f"{anio_actual}-01-01"
+		hasta = hasta or f"{anio_actual}-12-31"
+
+		return self.obtener_marcaciones_filtradas(desde, hasta)
 
 
 

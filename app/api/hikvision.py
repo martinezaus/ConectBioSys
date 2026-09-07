@@ -10,6 +10,7 @@ from typing import List, Optional
 from requests.auth import HTTPDigestAuth
 import urllib3
 import uuid
+
 from .base import RelojAdapter
 from .modelos import LecturaReloj
 
@@ -45,6 +46,19 @@ class HikvisionAdapter(RelojAdapter):
         esquema = "https" if self.usar_https else "http"
         return f"{esquema}://{self.ip}:{self.puerto}"
     
+
+    @staticmethod
+    def _normalizar_fecha(valor, fin_de_dia=False):
+        if isinstance(valor, datetime):
+            dt = valor
+        else:
+            dt = datetime.strptime(valor, "%Y-%m-%d")
+        
+        if fin_de_dia:
+            dt = dt.replace(hour=23, minute=59, second=59)
+
+        return dt
+
     def conectar(self) -> bool:
         import requests
         from requests.auth import HTTPDigestAuth
@@ -85,10 +99,11 @@ class HikvisionAdapter(RelojAdapter):
         search_id = str(uuid.uuid4())
 
         # Formato ISO estricto sin microsegundos requerido por Hikvision
-        if hasta is None:
-            hasta = datetime.now().astimezone().replace(microsecond=0).isoformat()
-        if desde is None:
-            desde = (datetime.now() - timedelta(days=7)).astimezone().replace(microsecond=0).isoformat()
+        hasta_dt = self._normalizar_fecha(hasta, fin_de_dia=True) if hasta else datetime.now()
+        desde_dt = self._normalizar_fecha(desde) if desde else hasta_dt - timedelta(days=7)
+
+        hasta = hasta_dt.astimezone().replace(microsecond=0).isoformat()
+        desde = desde_dt.astimezone().replace(microsecond=0).isoformat()
 
         marcaciones = []
         posicion = 0
@@ -112,12 +127,6 @@ class HikvisionAdapter(RelojAdapter):
             }
 
             try:
-                # Reseteamos el auth ANTES de cada pedido: requests cachea el nonce
-                # del desafío Digest anterior y lo reutiliza preventivamente para
-                # ahorrarse el round-trip. Hikvision rechaza nonces reusados con
-                # 401, así que forzamos un handshake Digest completo y nuevo en
-                # cada request (a costa de un pedido extra por vuelta, aceptable
-                # para un job de background).
                 self._session.auth = HTTPDigestAuth(self.usuario, self.password)
 
                 # Cambiamos obligatoriamente la URL de destino al formato JSON
@@ -202,3 +211,4 @@ class HikvisionAdapter(RelojAdapter):
         if self._session:
             self._session.close()
             log.info(f"[{self.dispositivo_id}] Desconectado")
+

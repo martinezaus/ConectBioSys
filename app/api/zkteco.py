@@ -5,8 +5,9 @@ Instalación: pip install pyzk
 """
 import logging
 from datetime import datetime, timedelta
-from typing import List, Optional
+from typing import List
 from zk import ZK
+
 from .base import RelojAdapter
 from .modelos import LecturaReloj
 
@@ -48,28 +49,51 @@ class ZKTecoAdapter(RelojAdapter):
         except Exception as e:
             log.error(f"[{self.dispositivo_id}] Error de conexión: {e}")
             return False
-
-    def obtener_marcaciones(self,desde=None, hasta=None) -> List[LecturaReloj]:
+        
+    def obtener_marcaciones(self, desde: Optional[str] = None, hasta: Optional[str] = None) -> List[LecturaReloj]:
         if self._conn is None:
             raise RuntimeError("Debe llamar a conectar() antes de obtener_marcaciones()")
+        
+        dt_hasta = self._a_datetime(hasta, fin_de_dia=True) if hasta else datetime.now()
+        dt_desde = self._a_datetime(desde) if desde else dt_hasta - timedelta(days=7)
 
         marcaciones = []
         try:
             registros = self._conn.get_attendance()
+            total_en_reloj = len(registros)
             for r in registros:
+                if not (dt_desde <= r.timestamp <= dt_hasta):
+                    continue
+
                 marcaciones.append(
-                    LecturaReloj(
-                        reloj_user_id=str(r.user_id),
-                        timestamp=r.timestamp,
-                        tipo_evento=r.punch,
-                        dispositivo_id=self.dispositivo_id,
-                        metodo=self.VERIFY_METHODS.get(r.status, "desconocido"),
-                    )
+                        LecturaReloj(
+                            reloj_user_id=str(r.user_id),
+                            timestamp=r.timestamp,
+                            tipo_evento=r.punch,
+                            dispositivo_id=self.dispositivo_id,
+                            metodo=self.VERIFY_METHODS.get(r.status, "desconocido"),
+                        )
                 )
-            log.info(f"[{self.dispositivo_id}] {len(marcaciones)} marcaciones descargadas")
+            log.info(
+                f"[{self.dispositivo_id}] {len(marcaciones)} marcaciones en rango "
+                f"(de {total_en_reloj} totales en el reloj)"
+            )
         except Exception as e:
             log.error(f"[{self.dispositivo_id}] Error leyendo marcaciones: {e}")
         return marcaciones
+    
+
+    @staticmethod
+    def _a_datetime(valor, fin_de_dia=False):
+        """Convierte 'YYYY-MM-DD' (o un datetime ya armado) a datetime."""
+        if isinstance(valor, datetime):
+            dt = valor
+        else:
+            dt = datetime.strptime(valor, "%Y-%m-%d")
+        
+        if fin_de_dia:
+            dt = dt.replace(hour=23, minute=59, second=59)
+        return dt
 
     def limpiar_buffer(self) -> None:
         """

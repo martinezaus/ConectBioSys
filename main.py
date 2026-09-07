@@ -27,20 +27,20 @@ from openpyxl import Workbook
 from app.database.database import Database
 from resources.config_relojes import RELOJES
 from resources.config_app import ESTILO_APP
-from app.api.relojes import ConfiguracionRelojesDialog 
-from resources.marcas_relojes import ADAPTERS
+from app.api.relojes import ConfiguracionRelojesDialog, RangoFechasDialog
 
+from resources.config_path import cargar_relojes, crear_adaptador
 
 ENCABEZADOS_MARCACIONES = ["Dispositivo", "Empleado", "Fecha y hora", "Tipo de evento", "Método"]
+RELOJES = cargar_relojes()
 
-def crear_adaptador(config_reloj):
-	"""Instancia el adaptador correcto según el 'tipo' declarado en la config."""
-	tipo = config_reloj["tipo"]
-	clase = ADAPTERS.get(tipo)
-	if clase is None:
-		raise ValueError(f"Tipo de reloj desconocido: {tipo!r}")
-	return clase(**config_reloj["params"])
-
+def _recargar_relojes(self): 
+    global RELOJES
+    try:
+        RELOJES = cargar_relojes()
+        self.mostrar_mensaje(f"Configuración de relojes actualizada ({len(RELOJES)} relojes).")
+    except Exception as e:
+        self.mostrar_mensaje(f"No se pudo recargar la configuración de relojes: {e}")
 
 class TablaMarcacionesDialog(QDialog):
 	"""Muestra una lista de marcaciones en una tabla con checkboxes para que el
@@ -108,6 +108,7 @@ class TablaMarcacionesDialog(QDialog):
 				seleccionadas.append(fila)
 		return seleccionadas
 
+
 class VentanaPrincipal(QMainWindow):
 
 	def __init__(self):
@@ -165,18 +166,6 @@ class VentanaPrincipal(QMainWindow):
 		dialogo = ConfiguracionRelojesDialog(parent=self)
 		if dialogo.exec() == QDialog.Accepted:
 			self._recargar_relojes()
-
-	def _recargar_relojes(self):
-		"""Vuelve a leer resources/config_relojes.py y actualiza la lista
-		RELOJES que usan los botones de conexión."""
-		global RELOJES
-		try:
-			import resources.config_relojes as modulo_config
-			importlib.reload(modulo_config)
-			RELOJES = modulo_config.RELOJES
-			self.mostrar_mensaje(f"Configuración de relojes actualizada ({len(RELOJES)} relojes).")
-		except Exception as e:
-			self.mostrar_mensaje(f"No se pudo recargar la configuración de relojes: {e}")
 
 	def conectar(self):
 		""" Conecta a los relojes y trae todas las marcaciones del mes anterior """
@@ -295,30 +284,38 @@ class VentanaPrincipal(QMainWindow):
 			raise NotImplementedError(
 				"Falta implementar 'obtener_marcaciones_por_tarjeta' en app/database/database.py"
 			)
-		return self.db.obtener_marcaciones_por_tarjeta(tarjeta, desde, hasta)
-
+		return self.db.obtener_marcaciones_filtradas(desde, hasta, tarjeta=tarjeta)
+	
 	def exportar(self):
-		""" Muestra en una tabla las marcaciones guardadas en la base de datos
-		y deja que el usuario elija cuáles exportar a Excel. """
+		""" Pide un rango de fechas, muestra en una tabla las marcaciones
+			guardadas en ese rango y deja que el usuario elija cuáles exportar. """
+		
+		dialogo_rango = RangoFechasDialog(parent=self)
+		if dialogo_rango.exec() != QDialog.Accepted:
+			self.mostrar_mensaje("Exportación cancelada.")
+			return
+		
+		desde, hasta = dialogo_rango.obtener_rango()
+
 		try:
-			filas = self.obtener_todas_marcaciones()
+			filas = self.obtener_todas_marcaciones(desde, hasta)
 		except Exception as e:
 			self.mostrar_mensaje(f"Error al leer la base de datos: {e}")
 			return
-
+		
 		if not filas:
-			self.mostrar_mensaje("No hay marcaciones guardadas para exportar.")
-			QMessageBox.information(self, "Exportar", "Todavía no hay marcaciones guardadas en la base de datos.")
+			self.mostrar_mensaje(f"No hay marcaciones guardadas entre {desde} y {hasta}.")
+			QMessageBox.information(self, "Exportar", "No hay marcaciones guardadas en ese rango de fechas.")
 			return
+		
+		self._mostrar_y_exportar(filas, f"Marcaciones ({desde} a {hasta})")
 
-		self._mostrar_y_exportar(filas, "Marcaciones guardadas")
-
-	def obtener_todas_marcaciones(self):
+	def obtener_todas_marcaciones(self, desde=None, hasta=None):
 		if not hasattr(self.db, "obtener_todas_marcaciones"):
 			raise NotImplementedError(
 				"Falta implementar 'obtener_todas_marcaciones' en app/database/database.py"
 			)
-		return self.db.obtener_todas_marcaciones()
+		return self.db.obtener_todas_marcaciones(desde, hasta)
 
 	def _mostrar_y_exportar(self, filas, titulo):
 		"""Abre el diálogo de tabla con checkboxes y, si el usuario confirma,

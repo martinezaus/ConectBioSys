@@ -23,7 +23,6 @@ def get_config_relojes_path():
             # No hay default empaquetado: creamos un archivo vacío válido
             with open(destino, "w", encoding="utf-8") as f:
                 f.write('RELOJES = []\n')
-
     return destino
 
 def cargar_relojes():
@@ -35,7 +34,6 @@ def cargar_relojes():
     spec.loader.exec_module(modulo)
     return modulo.RELOJES
 
-
 def crear_adaptador(config_reloj):
 	"""Instancia el adaptador correcto según el 'tipo' declarado en la config."""
 	tipo = config_reloj["tipo"]
@@ -44,13 +42,20 @@ def crear_adaptador(config_reloj):
 		raise ValueError(f"Tipo de reloj desconocido: {tipo!r}")
 	return clase(**config_reloj["params"])
 
+def cargar_config_mysql():
+	ruta = get_config_mysql_path()
+	spec = importlib.util.spec_from_file_location("config_mysql_runtime", ruta)
+	modulo = importlib.util.module_from_spec(spec)
+	spec.loader.exec_module(modulo)
+	return modulo.MYSQL_CONFIG
+
 def get_config_mysql_path():
-    base_dir = os.path.join(os.getenv("LOCALAPPDATA"), "ConectBioSync")
-    os.makedirs(base_dir, exist_ok=True)
-    destino = os.path.join(base_dir, "config_mysql.py")
-    if not os.path.exists(destino):
-        with open(destino, "w", encoding="utf-8") as f:
-            f.write(
+	base_dir = os.path.join(os.getenv("LOCALAPPDATA"), "ConectBioSync")
+	os.makedirs(base_dir, exist_ok=True)
+	destino = os.path.join(base_dir, "config_mysql.py")
+	if not os.path.exists(destino):
+		with open(destino, "w", encoding="utf-8") as f:
+			f.write(
 				'MYSQL_CONFIG = {\n'
 				'    "host": "",\n'
 				'    "puerto": 3306,\n'
@@ -58,16 +63,12 @@ def get_config_mysql_path():
 				'    "password": "",\n'
 				'    "base_datos": "",\n'
 				'    "tabla_empleados": "empleados",\n'
+				'    "columna_id": "n_reloj",\n'
+				'    "columna_nombre": "nombre",\n'
 				'}\n'
 			)
-    return destino
+	return destino
 
-def cargar_config_mysql():
-	ruta = get_config_mysql_path()
-	spec = importlib.util.spec_from_file_location("config_mysql_runtime", ruta)
-	modulo = importlib.util.module_from_spec(spec)
-	spec.loader.exec_module(modulo)
-	return modulo.MYSQL_CONFIG
 
 def guardar_config_mysql(config):
 	ruta = get_config_mysql_path()
@@ -79,6 +80,8 @@ def guardar_config_mysql(config):
 		f'    "password": {config["password"]!r},\n'
 		f'    "base_datos": {config["base_datos"]!r},\n'
 		f'    "tabla_empleados": {config["tabla_empleados"]!r},\n'
+		f'    "columna_id": {config["columna_id"]!r},\n'
+		f'    "columna_nombre": {config["columna_nombre"]!r},\n'
 		'}\n'
 	)
 	with open(ruta, "w", encoding="utf-8") as f:

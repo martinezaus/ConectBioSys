@@ -30,17 +30,11 @@ from resources.config_app import ESTILO_APP
 from app.api.relojes import ConfiguracionRelojesDialog, RangoFechasDialog
 
 from resources.config_path import cargar_relojes, crear_adaptador
+from app.api.empleados import obtener_mapa_empleados
 
 ENCABEZADOS_MARCACIONES = ["Dispositivo", "Empleado", "Fecha y hora", "Tipo de evento", "Método"]
 RELOJES = cargar_relojes()
 
-def _recargar_relojes(self): 
-    global RELOJES
-    try:
-        RELOJES = cargar_relojes()
-        self.mostrar_mensaje(f"Configuración de relojes actualizada ({len(RELOJES)} relojes).")
-    except Exception as e:
-        self.mostrar_mensaje(f"No se pudo recargar la configuración de relojes: {e}")
 
 class TablaMarcacionesDialog(QDialog):
 	"""Muestra una lista de marcaciones en una tabla con checkboxes para que el
@@ -167,6 +161,14 @@ class VentanaPrincipal(QMainWindow):
 		if dialogo.exec() == QDialog.Accepted:
 			self._recargar_relojes()
 
+	def _recargar_relojes(self): 
+		global RELOJES
+		try:
+			RELOJES = cargar_relojes()
+			self.mostrar_mensaje(f"Configuración de relojes actualizada ({len(RELOJES)} relojes).")
+		except Exception as e:
+			self.mostrar_mensaje(f"No se pudo recargar la configuración de relojes: {e}")
+
 	def conectar(self):
 		""" Conecta a los relojes y trae todas las marcaciones del mes anterior """
 		desde, hasta = self.rango_mes_anterior()
@@ -290,12 +292,15 @@ class VentanaPrincipal(QMainWindow):
 		""" Pide un rango de fechas, muestra en una tabla las marcaciones
 			guardadas en ese rango y deja que el usuario elija cuáles exportar. """
 		
+
 		dialogo_rango = RangoFechasDialog(parent=self)
 		if dialogo_rango.exec() != QDialog.Accepted:
 			self.mostrar_mensaje("Exportación cancelada.")
 			return
 		
 		desde, hasta = dialogo_rango.obtener_rango()
+		self.mostrar_mensaje("Aguarde... buscando la información.")
+		QApplication.processEvents()
 
 		try:
 			filas = self.obtener_todas_marcaciones(desde, hasta)
@@ -320,6 +325,9 @@ class VentanaPrincipal(QMainWindow):
 	def _mostrar_y_exportar(self, filas, titulo):
 		"""Abre el diálogo de tabla con checkboxes y, si el usuario confirma,
 		exporta a Excel las filas que quedaron tildadas."""
+
+
+		
 		dialogo = TablaMarcacionesDialog(filas, titulo, parent=self)
 		if dialogo.exec() != QDialog.Accepted:
 			self.mostrar_mensaje("Exportación cancelada.")
@@ -339,17 +347,34 @@ class VentanaPrincipal(QMainWindow):
 		if not ruta:
 			self.mostrar_mensaje("Exportación cancelada.")
 			return
-
+		
+		mapa_empleados = {}
+		try:
+			mapa_empleados = obtener_mapa_empleados()
+			self.mostrar_mensaje(f"{len(mapa_empleados)} empleados encontrados en MySQL para hacer el cruce.")
+			
+		except Exception as e:
+			self.mostrar_mensaje(f"No se pudo buscar nombres en MySQL, se exporta sin ese dato: {e}")
+		
 		wb = Workbook()
 		hoja = wb.active
 		hoja.title = "Marcaciones"
-		hoja.append(ENCABEZADOS_MARCACIONES)
+		# hoja.append(ENCABEZADOS_MARCACIONES)
+
+		encabezados = list(ENCABEZADOS_MARCACIONES)
+		indice_empleado = encabezados.index("Empleado")
+		encabezados.insert(indice_empleado + 1, "Nombre")
+		hoja.append(encabezados)
 
 		for fila in seleccionadas:
-			hoja.append(list(fila))
+			fila = list(fila)
+			numero_tarjeta = str(fila[indice_empleado])
+			nombre = mapa_empleados.get(numero_tarjeta, "")
+			fila.insert(indice_empleado + 1, nombre)
+			hoja.append(fila)
 
 		# Ancho de columnas legible
-		anchos = [15, 15, 20, 15, 15]
+		anchos = [15, 15, 20, 20, 15, 15]
 		for i, ancho in enumerate(anchos, start=1):
 			hoja.column_dimensions[hoja.cell(row=1, column=i).column_letter].width = ancho
 

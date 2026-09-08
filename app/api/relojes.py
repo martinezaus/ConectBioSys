@@ -449,6 +449,11 @@ class ConfiguracionMySQLDialog(QDialog):
 		self.campo_password.setEchoMode(QLineEdit.Password)
 		self.campo_base_datos = QLineEdit(config_actual.get("base_datos", ""))
 		self.campo_tabla = QLineEdit(config_actual.get("tabla_empleados", "empleados"))
+		self.campo_columna_id = QLineEdit(config_actual.get("columna_id", "tarjeta"))
+		self.campo_columna_nombre = QLineEdit(config_actual.get("columna_nombre", "nombre"))
+		
+		form.addRow("Columna tarjeta/ID:", self.campo_columna_id)
+		form.addRow("Columna nombre:", self.campo_columna_nombre)
 
 		form.addRow("Host / IP:", self.campo_host)
 		form.addRow("Puerto:", self.campo_puerto)
@@ -482,6 +487,9 @@ class ConfiguracionMySQLDialog(QDialog):
 			"password": self.campo_password.text(),
 			"base_datos": self.campo_base_datos.text().strip(),
 			"tabla_empleados": self.campo_tabla.text().strip(),
+			
+			"columna_id": self.campo_columna_id.text().strip(),
+			"columna_nombre": self.campo_columna_nombre.text().strip(),
 		}
 
 	def _probar_conexion(self):

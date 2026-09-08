@@ -8,11 +8,12 @@ class Database:
 		self.ruta=Path("data/marcaciones.db")
 		
 		print("Base de datos:")
-
 		print(self.ruta.resolve())
 
 		self.ruta.parent.mkdir(parents=True, exist_ok=True)
 		self.crear_tablas()
+		self._eliminar_duplicados_existentes()
+		self._crear_indice_unico()
 		
 	def conectar(self):
 		return sqlite3.connect(self.ruta)
@@ -35,6 +36,38 @@ class Database:
 		conexion.commit()
 		conexion.close()
 
+	def _eliminar_duplicados_existentes(self):
+		"""Deja una sola fila por (dispositivo_id, empleado_id, fecha_hora,
+		tipo_evento), conservando la de menor id. Es seguro correrlo en
+		cada arranque: si no hay duplicados, no borra nada."""
+		conexion = self.conectar()
+		cursor = conexion.cursor()
+		cursor.execute("""
+			DELETE FROM marcaciones
+			WHERE id NOT IN (
+				SELECT MIN(id)
+				FROM marcaciones
+				GROUP BY dispositivo_id, empleado_id, fecha_hora, tipo_evento
+			)
+		""")
+		eliminadas = cursor.rowcount
+		conexion.commit()
+		conexion.close()
+		if eliminadas:
+			print(f"Duplicados eliminados: {eliminadas}")
+
+	def _crear_indice_unico(self):
+		"""Crea el índice UNIQUE que impide que se vuelvan a guardar
+		duplicados de ahora en más."""
+		conexion = self.conectar()
+		cursor = conexion.cursor()
+		cursor.execute("""
+			CREATE UNIQUE INDEX IF NOT EXISTS idx_marcaciones_unica
+			ON marcaciones (dispositivo_id, empleado_id, fecha_hora, tipo_evento)
+		""")
+		conexion.commit()
+		conexion.close()
+
 	def obtener_marcaciones_filtradas(self, desde, hasta, tarjeta=None):
 		"""
 		   Devuelve marcaciones entre 'desde' y 'hasta' (YYYY-MM-DD), opcionalmente
@@ -47,11 +80,11 @@ class Database:
 		if tarjeta:
 			cursor.execute(
 				"""
-				    SELECT dispositivo_id, 
-					       empleado_id, 
+					SELECT dispositivo_id, 
+						   empleado_id, 
 						   fecha_hora, 
 						   CASE
-						        WHEN tipo_evento = 0 THEN 'Entrada'
+								WHEN tipo_evento = 0 THEN 'Entrada'
 								WHEN tipo_evento = 1 THEN 'Salida'
 								ELSE 'Otro'
 							END AS tipo_evento, 
@@ -59,19 +92,19 @@ class Database:
 					FROM marcaciones
 					WHERE date(fecha_hora) BETWEEN date(?) AND date(?)
 					AND empleado_id = ?
-				    ORDER BY fecha_hora
-            """,
-            (desde, hasta, tarjeta),
-        
+					ORDER BY fecha_hora
+			""",
+			(desde, hasta, tarjeta),
+		
 		)
 		else:
 			cursor.execute(
 				"""
-				    SELECT dispositivo_id, 
-					       empleado_id, 
+					SELECT dispositivo_id, 
+						   empleado_id, 
 						   fecha_hora, 
 						   CASE
-						        WHEN tipo_evento = 0 THEN 'Entrada'
+								WHEN tipo_evento = 0 THEN 'Entrada'
 								WHEN tipo_evento = 1 THEN 'Salida'
 								ELSE 'Otro'
 							END AS tipo_evento,
@@ -81,7 +114,7 @@ class Database:
 					ORDER BY fecha_hora
 				""",
 				(desde, hasta),
-		    
+			
 			)
 		filas = cursor.fetchall()
 		conexion.close()
@@ -114,9 +147,9 @@ class Database:
 		
 	def obtener_todas_marcaciones(self, desde=None, hasta=None):
 		"""
-		    Devuelve todas las marcaciones guardadas. Si se pasan 'desde'/'hasta'
-		    (YYYY-MM-DD), filtra por ese rango; si no, trae todo el histórico.
-	    """
+			Devuelve todas las marcaciones guardadas. Si se pasan 'desde'/'hasta'
+			(YYYY-MM-DD), filtra por ese rango; si no, trae todo el histórico.
+		"""
 		anio_actual = datetime.date.today().year
 		desde = desde or f"{anio_actual}-01-01"
 		hasta = hasta or f"{anio_actual}-12-31"

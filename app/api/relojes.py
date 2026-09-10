@@ -1,6 +1,5 @@
 import datetime
 import importlib
-import pymysql
 
 from PySide6.QtWidgets import (
 	QWidget,
@@ -25,12 +24,18 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import QDate
 
 from resources.config_path import (
-    get_config_relojes_path, 
-    cargar_relojes, 
-    crear_adaptador,
-	cargar_config_mysql,
-	guardar_config_mysql
-)    
+	cargar_config_conexion,
+	guardar_config_conexion,
+	crear_engine_externo,
+	cargar_config_empleados,
+	guardar_config_empleados,
+	cargar_config_asistencias,
+	guardar_config_asistencias,
+	cargar_relojes,
+	get_config_relojes_path,
+	crear_adaptador,
+)
+from resources.db_engines import ENGINES
 
 # Campos que necesita cada tipo de reloj: (nombre, tipo_de_dato, valor_por_defecto)
 # Si agregás un adaptador nuevo, sumalo acá y el formulario lo va a mostrar solo.
@@ -49,7 +54,6 @@ CAMPOS_POR_TIPO = {
 		("usar_https", bool, False),
 	],
 }
-RELOJES = cargar_relojes()
 
 def generar_config_relojes(relojes):
 	"""Genera el texto de resources/config_relojes.py a partir de la lista de
@@ -157,7 +161,6 @@ class RelojFormDialog(QDialog):
 	def obtener_reloj(self):
 		return self._reloj_resultado
 
-
 class ConfiguracionRelojesDialog(QDialog):
 	"""Pantalla para administrar la lista de relojes: agregar, editar,
 	eliminar y guardar los cambios en resources/config_relojes.py."""
@@ -184,6 +187,7 @@ class ConfiguracionRelojesDialog(QDialog):
 		self.boton_editar = QPushButton("Editar")
 		self.boton_eliminar = QPushButton("Eliminar")
 		self.boton_limpiar_buffer = QPushButton("Limpiar buffer")
+
 		fila_botones.addWidget(self.boton_agregar)
 		fila_botones.addWidget(self.boton_editar)
 		fila_botones.addWidget(self.boton_eliminar)
@@ -201,25 +205,20 @@ class ConfiguracionRelojesDialog(QDialog):
 			"QPushButton:disabled { background-color: #7f8c8d; color: #dcdcdc; }"
 		)
 
-		self.boton_config_mysql = QPushButton("Configurar conexión MySQL")
-		layout.addWidget(self.boton_config_mysql)
-		self.boton_config_mysql.clicked.connect(self._abrir_config_mysql)
+		self.boton_config_conexion = QPushButton("Configurar conexión a base de datos")
+		self.boton_config_tabla_empleados = QPushButton("Configurar tabla de empleados")
+		self.boton_config_tabla_asistencias = QPushButton("Configurar tabla de asistencias")
+		layout.addWidget(self.boton_config_conexion)
+		layout.addWidget(self.boton_config_tabla_empleados)
+		layout.addWidget(self.boton_config_tabla_asistencias)
 
-
-		botones = QDialogButtonBox()
-		self.boton_guardar = botones.addButton("Guardar", QDialogButtonBox.AcceptRole)
-		self.boton_cancelar = botones.addButton("Cancelar", QDialogButtonBox.RejectRole)
-		botones.accepted.connect(self._guardar)
-		botones.rejected.connect(self.reject)
-		layout.addWidget(botones)
+		self.boton_config_conexion.clicked.connect(self._abrir_config_conexion)
+		self.boton_config_tabla_empleados.clicked.connect(self._abrir_config_tabla_empleados)
+		self.boton_config_tabla_asistencias.clicked.connect(self._abrir_config_tabla_asistencias)
 
 	def _cargar_relojes_actuales(self):
 		try:
-			ruta = get_config_relojes_path()
-			spec = importlib.util.spec_from_file_location("config_relojes_runtime", ruta)
-			modulo_config = importlib.util.module_from_spec(spec)
-			spec.loader.exec_module(modulo_config)
-			return [dict(tipo=r["tipo"], params=dict(r["params"])) for r in modulo_config.RELOJES]
+			return [dict(tipo=r["tipo"], params=dict(r["params"])) for r in cargar_relojes()]
 		except Exception:
 			return []
 
@@ -241,17 +240,24 @@ class ConfiguracionRelojesDialog(QDialog):
 		dialogo = RelojFormDialog(parent=self)
 		if dialogo.exec() == QDialog.Accepted:
 			self.relojes.append(dialogo.obtener_reloj())
-			self._refrescar_tabla()
+			if self._guardar():
+				self._refrescar_tabla()
+			else:
+				self.relojes.pop()
 
 	def _editar(self):
 		fila = self.tabla.currentRow()
 		if fila < 0:
 			QMessageBox.information(self, "Editar", "Seleccioná un reloj de la lista.")
 			return
-		dialogo = RelojFormDialog(reloj=self.relojes[fila], parent=self)
+		reloj_anterior = self.relojes[fila]
+		dialogo = RelojFormDialog(reloj=reloj_anterior, parent=self)
 		if dialogo.exec() == QDialog.Accepted:
 			self.relojes[fila] = dialogo.obtener_reloj()
-			self._refrescar_tabla()
+			if self._guardar():
+				self._refrescar_tabla()
+			else:
+				self.relojes[fila] = reloj_anterior
 
 	def _eliminar(self):
 		fila = self.tabla.currentRow()
@@ -265,7 +271,10 @@ class ConfiguracionRelojesDialog(QDialog):
 		)
 		if resp == QMessageBox.Yes:
 			del self.relojes[fila]
-			self._refrescar_tabla()
+			if self._guardar():
+				self._refrescar_tabla()
+			else:
+				self.relojes.insert(fila, reloj)
 
 	def _guardar(self):
 		if not self.relojes:
@@ -293,49 +302,32 @@ class ConfiguracionRelojesDialog(QDialog):
 			QMessageBox.critical(self, "Error al guardar", f"No se pudo guardar la configuración:\n{e}")
 			return
 
-		self.accept()
+		return True
 
 	def _ruta_config(self):
-		return get_config_relojes_path()
-	
+		return get_config_relojes_path()	
 
-	def sincronizacion_completa(self):
-		resp = QMessageBox.question(
-			        self, "Sincronización completa",
-					   	  "Esto va a descargar TODO el historial de cada reloj (puede tardar "
-						  "varios minutos) y, si se guarda todo correctamente, va a BORRAR "
-						  "las marcaciones de la memoria del reloj.\n\n"
-						  "¿Confirmás que querés continuar?"
-			    )
-		if resp != QMessageBox.Yes:
-			return
-		
-		# Rango bien amplio para traer todo lo que tenga el reloj en memoria.
-		desde = "2000-01-01"
-		hasta = datetime.date.today().strftime("%Y-%m-%d")
-		self._descargar_marcaciones(desde, hasta, self.boton_sync_completa, limpiar_buffer_si_ok=True)
-		
-	
+	def closeEvent(self, event):
+		"""Cada alta/edición/baja se guarda al toque, así que no hay cambios
+		pendientes que se puedan perder al cerrar: se cierra directamente."""
+		self.accept()
+		event.accept()
+
 	def limpiar_buffer_relojes(self):
 		""" Borra la memoria de marcaciones de cada reloj SIN descargarlas ni
-			guardarlas antes. Operación irreversible: cualquier marcación que no
-			se haya guardado previamente en la base se pierde para siempre. """
-		
+		guardarlas antes. Operación irreversible. """
+
 		aviso = QMessageBox(self)
 		aviso.setIcon(QMessageBox.Warning)
 		aviso.setWindowTitle("⚠ Limpiar buffer de relojes")
-		aviso.setText(
-			"Esta acción va a BORRAR todas las marcaciones almacenadas en la "
-			"memoria de cada reloj configurado, SIN descargarlas ni guardarlas "
-			"primero.\n\n"
-			"Cualquier marcación que no hayas sincronizado antes se va a perder "
-			"DEFINITIVAMENTE.\n\n"
-			"¿Estás seguro de que querés continuar?"
-			)
+		aviso.setText("Esta acción va a BORRAR todas las marcaciones almacenadas en la "
+					"memoria de cada reloj configurado, SIN descargarlas ni guardarlas "
+					"primero.\n\nCualquier marcación que no hayas sincronizado antes se "
+					"va a perder DEFINITIVAMENTE.\n\n¿Estás seguro de que querés continuar?"
+		)
 		aviso.setStandardButtons(QMessageBox.Yes | QMessageBox.Cancel)
 		aviso.setDefaultButton(QMessageBox.Cancel)
 		if aviso.exec() != QMessageBox.Yes:
-			self.mostrar_mensaje("Limpieza de buffer cancelada.")
 			return
 		
 		texto, ok = QInputDialog.getText(
@@ -343,46 +335,47 @@ class ConfiguracionRelojesDialog(QDialog):
 		)
 
 		if not ok or texto.strip() != "BORRAR":
-			self.mostrar_mensaje("Limpieza de buffer cancelada (confirmación incorrecta).")
 			return
 		
-		self.mostrar_mensaje("Iniciando limpieza de buffer en los relojes...")
 		self.boton_limpiar_buffer.setEnabled(False)
 		QApplication.processEvents()
-
-		for config_reloj in RELOJES:
+		relojes_guardados = cargar_relojes()
+		resultados = []
+		for config_reloj in relojes_guardados:
 			dispositivo_id = config_reloj["params"].get("dispositivo_id", "?")
 			try:
 				adapter = crear_adaptador(config_reloj)
 			except ValueError as e:
-				self.mostrar_mensaje(f"[{dispositivo_id}] Error de configuración: {e}")
+				resultados.append(f"[{dispositivo_id}] Error de configuración: {e}")
 				continue
 
 			if not hasattr(adapter, "limpiar_buffer"):
-				self.mostrar_mensaje(f"[{dispositivo_id}] Este tipo de reloj no soporta limpiar buffer. Se omite.")
+				resultados.append(f"[{dispositivo_id}] No soporta limpiar buffer. Se omite.")
 				continue
 
-			self.mostrar_mensaje(f"[{dispositivo_id}] Conectando...")
-			QApplication.processEvents()
 			if not adapter.conectar():
-				self.mostrar_mensaje(f"[{dispositivo_id}] No se pudo conectar. Se omite.")
+				resultados.append(f"[{dispositivo_id}] No se pudo conectar. Se omite.")
 				continue
 
 			try:
 				adapter.limpiar_buffer()
-				self.mostrar_mensaje(f"[{dispositivo_id}] Buffer limpiado correctamente.")
+				resultados.append(f"[{dispositivo_id}] Buffer limpiado correctamente.")
 			except Exception as e:
-				self.mostrar_mensaje(f"[{dispositivo_id}] Error al limpiar buffer: {e}")
+				resultados.append(f"[{dispositivo_id}] Error al limpiar buffer: {e}")
 			finally:
 				adapter.desconectar()
 
-		self.mostrar_mensaje("Limpieza de buffer finalizada.")
 		self.boton_limpiar_buffer.setEnabled(True)
+		QMessageBox.information(self, "Limpieza finalizada", "\n".join(resultados) or "No hay relojes configurados.")
 
-	def _abrir_config_mysql(self):
-		dialogo = ConfiguracionMySQLDialog(parent=self)
-		dialogo.exec()
+	def _abrir_config_conexion(self):
+		ConfiguracionConexionDialog(parent=self).exec()
 
+	def _abrir_config_tabla_empleados(self):
+		ConfiguracionTablaEmpleadosDialog(parent=self).exec()
+
+	def _abrir_config_tabla_asistencias(self):
+		ConfiguracionTablaAsistenciasDialog(parent=self).exec()
 
 class RangoFechasDialog(QDialog):
 	"""Pide un rango 'desde'/'hasta' antes de exportar, para no traer
@@ -427,41 +420,47 @@ class RangoFechasDialog(QDialog):
 			self.fecha_hasta.date().toString("yyyy-MM-dd"),
 		)	
 
-
-class ConfiguracionMySQLDialog(QDialog):
-	"""Formulario para configurar la conexión a la base MySQL externa donde
-	vive la tabla de empleados, con botón para probar antes de guardar."""
+class ConfiguracionConexionDialog(QDialog):
+	"""Elige el motor de base de datos y sus datos de conexión. Esta config
+	es compartida entre la lectura de empleados y el envío de asistencias."""
 
 	def __init__(self, parent=None):
 		super().__init__(parent)
-		self.setWindowTitle("Configurar conexión MySQL")
-		self.resize(400, 300)
+		self.setWindowTitle("Configurar conexión a base de datos")
+		self.resize(420, 320)
 
-		config_actual = cargar_config_mysql()
+		config_actual = cargar_config_conexion()
 
 		layout = QVBoxLayout(self)
 		form = QFormLayout()
 
+		self.combo_motor = QComboBox()
+		for clave, info in ENGINES.items():
+			self.combo_motor.addItem(info["label"], clave)
+		idx = self.combo_motor.findData(config_actual.get("motor", "mysql"))
+		if idx >= 0:
+			self.combo_motor.setCurrentIndex(idx)
+		form.addRow("Motor:", self.combo_motor)
+
 		self.campo_host = QLineEdit(config_actual.get("host", ""))
-		self.campo_puerto = QLineEdit(str(config_actual.get("puerto", 3306)))
+		self.campo_puerto = QLineEdit(str(config_actual.get("puerto") or ""))
 		self.campo_usuario = QLineEdit(config_actual.get("usuario", ""))
 		self.campo_password = QLineEdit(config_actual.get("password", ""))
 		self.campo_password.setEchoMode(QLineEdit.Password)
 		self.campo_base_datos = QLineEdit(config_actual.get("base_datos", ""))
-		self.campo_tabla = QLineEdit(config_actual.get("tabla_empleados", "empleados"))
-		self.campo_columna_id = QLineEdit(config_actual.get("columna_id", "tarjeta"))
-		self.campo_columna_nombre = QLineEdit(config_actual.get("columna_nombre", "nombre"))
-		
-		form.addRow("Columna tarjeta/ID:", self.campo_columna_id)
-		form.addRow("Columna nombre:", self.campo_columna_nombre)
+		self.campo_archivo_sqlite = QLineEdit(config_actual.get("archivo_sqlite", ""))
 
-		form.addRow("Host / IP:", self.campo_host)
-		form.addRow("Puerto:", self.campo_puerto)
-		form.addRow("Usuario:", self.campo_usuario)
-		form.addRow("Contraseña:", self.campo_password)
-		form.addRow("Base de datos:", self.campo_base_datos)
-		form.addRow("Tabla de empleados:", self.campo_tabla)
+		self.fila_host = form.addRow("Host / IP:", self.campo_host)
+		self.fila_puerto = form.addRow("Puerto:", self.campo_puerto)
+		self.fila_usuario = form.addRow("Usuario:", self.campo_usuario)
+		self.fila_password = form.addRow("Contraseña:", self.campo_password)
+		self.fila_base_datos = form.addRow("Base de datos:", self.campo_base_datos)
+		self.fila_archivo = form.addRow("Archivo SQLite:", self.campo_archivo_sqlite)
+
 		layout.addLayout(form)
+
+		self.combo_motor.currentIndexChanged.connect(self._actualizar_campos_visibles)
+		self._actualizar_campos_visibles()
 
 		fila_botones = QHBoxLayout()
 		self.boton_probar = QPushButton("Probar conexión")
@@ -475,21 +474,46 @@ class ConfiguracionMySQLDialog(QDialog):
 		botones.rejected.connect(self.reject)
 		layout.addWidget(botones)
 
+	def _motor_actual(self):
+		return self.combo_motor.currentData()
+
+	def _actualizar_campos_visibles(self):
+		info = ENGINES[self._motor_actual()]
+		es_sqlite = info["requiere_archivo"]
+
+		for widget in (self.campo_host, self.campo_puerto, self.campo_usuario,
+					   self.campo_password, self.campo_base_datos):
+			widget.setVisible(not es_sqlite)
+		self.campo_archivo_sqlite.setVisible(es_sqlite)
+
+		if not es_sqlite and not self.campo_puerto.text():
+			self.campo_puerto.setText(str(info["puerto_default"]))
+
 	def _armar_config(self):
+		motor = self._motor_actual()
+		info = ENGINES[motor]
+		if info["requiere_archivo"]:
+			if not self.campo_archivo_sqlite.text().strip():
+				QMessageBox.warning(self, "Dato requerido", "Indicá la ruta del archivo SQLite.")
+				return None
+			return {
+				"motor": motor, "host": "", "puerto": None, "usuario": "",
+				"password": "", "base_datos": "",
+				"archivo_sqlite": self.campo_archivo_sqlite.text().strip(),
+			}
+
 		puerto_texto = self.campo_puerto.text().strip()
 		if not puerto_texto.isdigit():
 			QMessageBox.warning(self, "Dato inválido", "El puerto tiene que ser un número.")
 			return None
 		return {
+			"motor": motor,
 			"host": self.campo_host.text().strip(),
 			"puerto": int(puerto_texto),
 			"usuario": self.campo_usuario.text().strip(),
 			"password": self.campo_password.text(),
 			"base_datos": self.campo_base_datos.text().strip(),
-			"tabla_empleados": self.campo_tabla.text().strip(),
-			
-			"columna_id": self.campo_columna_id.text().strip(),
-			"columna_nombre": self.campo_columna_nombre.text().strip(),
+			"archivo_sqlite": "",
 		}
 
 	def _probar_conexion(self):
@@ -497,14 +521,10 @@ class ConfiguracionMySQLDialog(QDialog):
 		if config is None:
 			return
 		try:
-			
-			conexion = pymysql.connect(
-				host=config["host"], port=config["puerto"],
-				user=config["usuario"], password=config["password"],
-				database=config["base_datos"], connect_timeout=8,
-			)
-			conexion.close()
-			QMessageBox.information(self, "Conexión OK", "La conexión a MySQL se probó con éxito.")
+			engine = crear_engine_externo(config)
+			with engine.connect():
+				pass
+			QMessageBox.information(self, "Conexión OK", "La conexión se probó con éxito.")
 		except Exception as e:
 			QMessageBox.critical(self, "Error de conexión", f"No se pudo conectar:\n{e}")
 
@@ -513,8 +533,122 @@ class ConfiguracionMySQLDialog(QDialog):
 		if config is None:
 			return
 		try:
-			guardar_config_mysql(config)
+			guardar_config_conexion(config)
 		except Exception as e:
 			QMessageBox.critical(self, "Error al guardar", f"No se pudo guardar la configuración:\n{e}")
 			return
-		self.accept()	
+		self.accept()
+
+class ConfiguracionTablaEmpleadosDialog(QDialog):
+	"""Define en qué tabla/columnas está el nombre de cada empleado, sobre
+	la conexión ya configurada."""
+
+	def __init__(self, parent=None):
+		super().__init__(parent)
+		self.setWindowTitle("Configurar tabla de empleados")
+		self.resize(400, 220)
+
+		config_actual = cargar_config_empleados()
+
+		layout = QVBoxLayout(self)
+		layout.addWidget(QLabel(
+			"Usa la conexión configurada en 'Configurar conexión a base de datos'."
+		))
+		form = QFormLayout()
+
+		self.campo_tabla = QLineEdit(config_actual.get("tabla", "empleados"))
+		self.campo_tabla_organizacion = QLineEdit(config_actual.get("tabla_org", "empleados"))
+		self.campo_columna_id = QLineEdit(config_actual.get("columna_id", ""))
+		self.campo_columna_nombre = QLineEdit(config_actual.get("columna_nombre", ""))
+		self.campo_columna_condicion = QLineEdit(config_actual.get("columna_condicion", ""))
+
+		form.addRow("Tabla:", self.campo_tabla)
+		form.addRow("Nombre Columna número tarjeta:", self.campo_columna_id)
+		form.addRow("Nombre Columna apellido/nombre:", self.campo_columna_nombre)
+		form.addRow("Nombre Columna condicion:", self.campo_columna_condicion)
+		layout.addLayout(form)
+
+		botones = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+		botones.accepted.connect(self._guardar)
+		botones.rejected.connect(self.reject)
+		layout.addWidget(botones)
+
+	def _guardar(self):
+		tabla = self.campo_tabla.text().strip()
+		columna_id = self.campo_columna_id.text().strip()
+		columna_nombre = self.campo_columna_nombre.text().strip()
+		columna_condicion = self.campo_columna_condicion.text().strip()
+		
+		if not tabla or not columna_id or not columna_nombre:
+			QMessageBox.warning(self, "Datos requeridos", "Completá los tres campos.")
+			return
+		try:
+			guardar_config_empleados({
+				"tabla": tabla,
+				"columna_id": columna_id,
+				"columna_nombre": columna_nombre,
+				"columna_condicion": columna_condicion
+			})
+		except Exception as e:
+			QMessageBox.critical(self, "Error al guardar", f"No se pudo guardar:\n{e}")
+			return
+		self.accept()
+
+class ConfiguracionTablaAsistenciasDialog(QDialog):
+	"""Define en qué tabla/columnas del sistema web hay que insertar las
+	marcaciones, sobre la conexión ya configurada."""
+
+	def __init__(self, parent=None):
+		super().__init__(parent)
+		self.setWindowTitle("Configurar tabla de asistencias")
+		self.resize(420, 320)
+
+		config_actual = cargar_config_asistencias()
+
+		layout = QVBoxLayout(self)
+		layout.addWidget(QLabel(
+			"Usa la conexión configurada en 'Configurar conexión a base de datos'."
+		))
+		form = QFormLayout()
+
+		self.campo_tabla = QLineEdit(config_actual.get("tabla", "asistencias"))
+		self.campo_col_empleado = QLineEdit(config_actual.get("columna_empleado", ""))
+		self.campo_col_fecha = QLineEdit(config_actual.get("columna_fecha", ""))
+		self.campo_col_hora = QLineEdit(config_actual.get("columna_hora", ""))
+		self.campo_col_tipo = QLineEdit(config_actual.get("columna_tipo", ""))
+		self.campo_col_reloj = QLineEdit(config_actual.get("columna_reloj", ""))
+		self.campo_col_c_ver = QLineEdit(config_actual.get("columna_c_ver", ""))
+
+		form.addRow("Tabla:", self.campo_tabla)
+		form.addRow("Nombre Columna empleado/Id:", self.campo_col_empleado)
+		form.addRow("Nombre Columna fecha:", self.campo_col_fecha)
+		form.addRow("Nombre Columna hora:", self.campo_col_hora)
+		form.addRow("Nombre Columna tipo de asistencia:", self.campo_col_tipo)
+		form.addRow("Nombre Columna número de dispositivo:", self.campo_col_reloj)
+		form.addRow("Nombre Columna verificacion:", self.campo_col_c_ver)
+		layout.addLayout(form)
+
+		botones = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+		botones.accepted.connect(self._guardar)
+		botones.rejected.connect(self.reject)
+		layout.addWidget(botones)
+
+	def _guardar(self):
+		valores = {
+			"tabla": self.campo_tabla.text().strip(),
+			"columna_empleado": self.campo_col_empleado.text().strip(),
+			"columna_fecha": self.campo_col_fecha.text().strip(),
+			"columna_hora": self.campo_col_hora.text().strip(),
+			"columna_tipo": self.campo_col_tipo.text().strip(),
+			"columna_reloj": self.campo_col_reloj.text().strip(),
+			"columna_c_ver": self.campo_col_c_ver.text().strip(),
+		}
+		if not all(valores.values()):
+			QMessageBox.warning(self, "Datos requeridos", "Completá todos los campos.")
+			return
+		try:
+			guardar_config_asistencias(valores)
+		except Exception as e:
+			QMessageBox.critical(self, "Error al guardar", f"No se pudo guardar:\n{e}")
+			return
+		self.accept()

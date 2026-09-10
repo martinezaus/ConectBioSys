@@ -1,41 +1,27 @@
 import pymysql
-from resources.config_path import cargar_config_mysql
+from sqlalchemy import text
+
+from resources.config_path import (
+	crear_engine_externo,
+	cargar_config_empleados,
+	cargar_config_conexion,
+	_validar_identificador_sql,
+)
+
 
 
 def obtener_mapa_empleados():
-	"""Conecta a la base MySQL externa y devuelve un diccionario
-	{numero_tarjeta: nombre_completo} para buscar nombres por tarjeta."""
-	config = cargar_config_mysql()
+	"""Devuelve un diccionario {numero_tarjeta: nombre_completo}."""
+	config_tabla = cargar_config_empleados()
 
-	if not config["host"] or not config["tabla_empleados"]:
-		raise ValueError(
-			"La conexión MySQL no está configurada. Andá a "
-			"'Configurar relojes' > 'Configurar conexión MySQL'."
+	tabla = _validar_identificador_sql(config_tabla["tabla"])
+	columna_id = _validar_identificador_sql(config_tabla["columna_id"])
+	columna_nombre = _validar_identificador_sql(config_tabla["columna_nombre"])
+	columna_condicion = _validar_identificador_sql(config_tabla["columna_condicion"])
+
+	engine = crear_engine_externo(cargar_config_conexion())
+	with engine.connect() as conexion:
+		resultado = conexion.execute(
+			text(f'SELECT "{columna_id}" AS id, "{columna_nombre}" AS nombre FROM "{tabla}" WHERE "{columna_condicion}"')
 		)
-
-	tabla = config["tabla_empleados"]
-	columna_id = config["columna_id"]
-	columna_nombre = config["columna_nombre"]
-
-	# Nombres de tabla/columna no se pueden parametrizar con placeholders (?),
-	# así que los validamos a mano contra inyección SQL.
-	for valor in (tabla, columna_id, columna_nombre):
-		if not valor.replace("_", "").isalnum():
-			raise ValueError(f"Nombre de tabla/columna inválido: {valor!r}")
-
-	conexion = pymysql.connect(
-		host=config["host"],
-		port=int(config["puerto"]),
-		user=config["usuario"],
-		password=config["password"],
-		database=config["base_datos"],
-		cursorclass=pymysql.cursors.DictCursor,
-		connect_timeout=10,
-	)
-	try:
-		with conexion.cursor() as cursor:
-			cursor.execute(f"SELECT `{columna_id}`, `{columna_nombre}` FROM `{tabla}`")
-			filas = cursor.fetchall()
-			return {str(fila[columna_id]): fila[columna_nombre] for fila in filas}
-	finally:
-		conexion.close()
+		return {str(fila.id).strip(): fila.nombre for fila in resultado}

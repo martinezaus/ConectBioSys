@@ -20,8 +20,10 @@ from PySide6.QtWidgets import (
 	QTableWidgetItem,
 	QCheckBox,
 	QLabel,
+	QFrame,
 )
 from PySide6.QtGui import QIcon
+from PySide6.QtCore import Qt
 from openpyxl import Workbook
 
 from app.database.database import Database
@@ -31,6 +33,7 @@ from app.api.relojes import ConfiguracionRelojesDialog, RangoFechasDialog
 
 from resources.config_path import cargar_relojes, crear_adaptador
 from app.api.empleados import obtener_mapa_empleados
+from app.api.asistencias import enviar_marcaciones
 
 ENCABEZADOS_MARCACIONES = ["Dispositivo", "Empleado", "Fecha y hora", "Tipo de evento", "Método"]
 RELOJES = cargar_relojes()
@@ -81,11 +84,23 @@ class TablaMarcacionesDialog(QDialog):
 		self.boton_desmarcar_todo.clicked.connect(lambda: self._marcar_todo(False))
 
 		botones = QDialogButtonBox()
-		self.boton_exportar = botones.addButton("Exportar seleccionados", QDialogButtonBox.AcceptRole)
+		self.boton_exportar_excel = botones.addButton("Exportar a Excel", QDialogButtonBox.ActionRole)
+		self.boton_enviar_mysql = botones.addButton("Enviar a base de datos", QDialogButtonBox.ActionRole)
 		self.boton_cerrar = botones.addButton("Cerrar", QDialogButtonBox.RejectRole)
-		botones.accepted.connect(self.accept)
+
+		self.destino = None
+		self.boton_exportar_excel.clicked.connect(self._elegir_excel)
+		self.boton_enviar_mysql.clicked.connect(self._elegir_mysql)
 		botones.rejected.connect(self.reject)
 		layout.addWidget(botones)
+
+	def _elegir_excel(self):
+		self.destino = "excel"
+		self.accept()
+
+	def _elegir_mysql(self):
+		self.destino = "mysql"
+		self.accept()
 
 	def _marcar_todo(self, estado):
 		for fila_idx in range(self.tabla.rowCount()):
@@ -101,7 +116,6 @@ class TablaMarcacionesDialog(QDialog):
 			if checkbox is not None and checkbox.isChecked():
 				seleccionadas.append(fila)
 		return seleccionadas
-
 
 class VentanaPrincipal(QMainWindow):
 
@@ -127,17 +141,19 @@ class VentanaPrincipal(QMainWindow):
 		self.boton_conectar1 = QPushButton("Ultimo 7 dias")
 		self.boton_conectar2 = QPushButton("Tarjeta")
 		self.boton_exportar = QPushButton("Exportar")
-		self.boton_configurar_relojes = QPushButton("Configurar relojes")
+		self.boton_configurar_relojes = QPushButton("Configuraciones")
 
 		self.fila_botones.addWidget(self.boton_conectar)
 		self.fila_botones.addWidget(self.boton_conectar1)
 		self.fila_botones.addWidget(self.boton_conectar2)
 		self.fila_botones.addWidget(self.boton_exportar)
 		self.fila_botones.addWidget(self.boton_configurar_relojes)
-
+		self.boton_configurar_relojes.setStyleSheet(
+			"QPushButton { background-color: #c0392b; color: white; font-weight: bold; }"
+			"QPushButton:hover { background-color: #a93226; }"
+			"QPushButton:disabled { background-color: #7f8c8d; color: #dcdcdc; }"
+		)
 		layout.addLayout(self.fila_botones)
-
-
 		self.barra_progreso = QProgressBar()
 		self.barra_progreso.setVisible(False)   # oculta hasta que se necesite
 		layout.addWidget(self.barra_progreso)
@@ -147,6 +163,11 @@ class VentanaPrincipal(QMainWindow):
 		self.area_mensajes.setReadOnly(True)
 		layout.addWidget(self.area_mensajes)
 
+
+		# AGREGAR EL FOOTER AL FINAL DEL LAYOUT
+		self.footer = AppFooter()
+		layout.addWidget(self.footer)
+
 		# Evento del botón
 		self.boton_conectar.clicked.connect(self.conectar)
 		self.boton_conectar1.clicked.connect(self.conectar_dias)
@@ -155,11 +176,12 @@ class VentanaPrincipal(QMainWindow):
 		self.boton_configurar_relojes.clicked.connect(self.abrir_configuracion_relojes)
 
 	def abrir_configuracion_relojes(self):
-		""" Abre la pantalla de administración de relojes. Si el usuario guarda
-		cambios, recarga RELOJES en memoria (no hace falta reiniciar la app). """
+		""" Abre la pantalla de administración de relojes. Cada alta, edición o
+		baja se guarda al instante dentro de esa pantalla, así que al cerrarla
+		(sea como sea que se cierre) recargamos RELOJES en memoria. """
 		dialogo = ConfiguracionRelojesDialog(parent=self)
-		if dialogo.exec() == QDialog.Accepted:
-			self._recargar_relojes()
+		dialogo.exec()
+		self._recargar_relojes()
 
 	def _recargar_relojes(self): 
 		global RELOJES
@@ -287,7 +309,15 @@ class VentanaPrincipal(QMainWindow):
 				"Falta implementar 'obtener_marcaciones_por_tarjeta' en app/database/database.py"
 			)
 		return self.db.obtener_marcaciones_filtradas(desde, hasta, tarjeta=tarjeta)
-	
+
+	def obtener_todas_marcaciones(self, desde=None, hasta=None):
+		if not hasattr(self.db, "obtener_todas_marcaciones"):
+			raise NotImplementedError(
+				"Falta implementar 'obtener_todas_marcaciones' en app/database/database.py"
+			)
+		return self.db.obtener_todas_marcaciones(desde, hasta)
+
+
 	def exportar(self):
 		""" Pide un rango de fechas, muestra en una tabla las marcaciones
 			guardadas en ese rango y deja que el usuario elija cuáles exportar. """
@@ -315,19 +345,10 @@ class VentanaPrincipal(QMainWindow):
 		
 		self._mostrar_y_exportar(filas, f"Marcaciones ({desde} a {hasta})")
 
-	def obtener_todas_marcaciones(self, desde=None, hasta=None):
-		if not hasattr(self.db, "obtener_todas_marcaciones"):
-			raise NotImplementedError(
-				"Falta implementar 'obtener_todas_marcaciones' en app/database/database.py"
-			)
-		return self.db.obtener_todas_marcaciones(desde, hasta)
-
 	def _mostrar_y_exportar(self, filas, titulo):
 		"""Abre el diálogo de tabla con checkboxes y, si el usuario confirma,
 		exporta a Excel las filas que quedaron tildadas."""
 
-
-		
 		dialogo = TablaMarcacionesDialog(filas, titulo, parent=self)
 		if dialogo.exec() != QDialog.Accepted:
 			self.mostrar_mensaje("Exportación cancelada.")
@@ -337,7 +358,13 @@ class VentanaPrincipal(QMainWindow):
 		if not seleccionadas:
 			QMessageBox.information(self, "Exportar", "No seleccionaste ninguna marcación.")
 			return
+		
+		if dialogo.destino == "excel":
+			self._exportar_a_excel(seleccionadas)
+		elif dialogo.destino == "mysql":
+			self._enviar_a_mysql(seleccionadas)
 
+	def _exportar_a_excel(self, seleccionadas):
 		hoy = datetime.date.today().strftime("%Y-%m-%d")
 		ruta_sugerida = f"marcaciones_{hoy}.xlsx"
 		ruta, _ = QFileDialog.getSaveFileName(
@@ -382,6 +409,39 @@ class VentanaPrincipal(QMainWindow):
 		self.mostrar_mensaje(f"Archivo exportado: {ruta} ({len(seleccionadas)} marcaciones).")
 		QMessageBox.information(self, "Exportar", f"Se exportaron {len(seleccionadas)} marcaciones a:\n{ruta}")
 
+
+	def _enviar_a_mysql(self, seleccionadas):
+		resp = QMessageBox.question(
+			self, "Enviar a base de datos",
+			       f"Se van a enviar {len(seleccionadas)} marcaciones a la base de asistencias "
+				   	"del sistema web. ¿Confirmás?"
+			)
+		if resp != QMessageBox.Yes:
+			self.mostrar_mensaje("Envío cancelado.")
+			return
+		self.mostrar_mensaje("Enviando marcaciones al sistema web...")
+		QApplication.processEvents()
+
+		try:
+			insertadas, errores, detalle_errores = enviar_marcaciones(seleccionadas)
+		except Exception as e:
+			self.mostrar_mensaje(f"Error al enviar a la base de datos: {e}")
+			QMessageBox.critical(self, "Error", f"No se pudo enviar:\n{e}")
+			return
+		
+		self.mostrar_mensaje(f"Enviadas: {insertadas}. Con error o duplicadas: {errores}.")
+		if detalle_errores:
+			self.mostrar_mensaje("Detalle de los primeros errores:")
+			for detalle in detalle_errores:
+				self.mostrar_mensaje(f"  - {detalle}")
+		QMessageBox.information(
+			self, "Envío completado",
+			 	  f"Se insertaron {insertadas} marcaciones nuevas.\n"
+				  f"{errores} se saltearon (duplicadas o con error).\n\n"
+				  + ("Revisá el detalle de errores en el panel de mensajes."
+				  	 if detalle_errores else "")
+		)
+
 	def mostrar_mensaje(self, mensaje):
 		self.area_mensajes.append(mensaje)
 
@@ -403,11 +463,99 @@ class VentanaPrincipal(QMainWindow):
 		desde = hoy - datetime.timedelta(days=dias)
 		return desde.strftime("%Y-%m-%d"), hoy.strftime("%Y-%m-%d")
 
+class AppFooter(QFrame):
+    """Componente de Footer reutilizable"""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        
+        # Estilo del Footer (fondo oscuro, bordes y tipografía adaptada)
+        self.setStyleSheet("""
+            QFrame {
+                background-color: #1e1e2e;
+                border-top: 1px solid #313244;
+                color: #a6adc8;
+                font-family: 'Segoe UI', sans-serif;
+                font-size: 11px;
+            }
+            QLabel {
+                border: none;
+            }
+            QPushButton {
+                background: transparent;
+                border: none;
+                color: #89b4fa;
+                font-size: 11px;
+                padding: 0 4px;
+            }
+            QPushButton:hover {
+                color: #b4befe;
+                text-decoration: underline;
+            }
+        """)
+
+        # Layout principal horizontal
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(12, 6, 12, 6)
+        
+        # 1. LADO IZQUIERDO: Copyright y Nombre de Empresa
+        self.lbl_copyright = QLabel("© 2026 <b>Conetia</b> Software | Todos los derechos reservados")
+        layout.addWidget(self.lbl_copyright)
+
+        layout.addStretch()  # Empuja los elementos del centro hacia el medio
+
+        # 2. CENTRO: Licencia y Botón "Acerca de"
+        self.btn_license = QPushButton("Licencia Propietaria")
+        self.btn_license.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_license.clicked.connect(self.show_license_dialog)
+
+        lbl_separator = QLabel("•")
+        lbl_separator.setStyleSheet("color: #45475a;")
+
+        self.btn_about = QPushButton("Acerca de")
+        self.btn_about.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_about.clicked.connect(self.show_about_dialog)
+
+        layout.addWidget(self.btn_license)
+        layout.addWidget(lbl_separator)
+        layout.addWidget(self.btn_about)
+
+        layout.addStretch()  # Empuja los elementos del lado derecho a la esquina
+
+        # 3. LADO DERECHO: Versión y Estado de Conexión
+        self.lbl_info = QLabel("v1.0.0  |  <span style='color: #a6e3a1;'>🟢 Conectado</span>")
+        layout.addWidget(self.lbl_info)
+
+    # Ventana modal para mostrar la Licencia
+    def show_license_dialog(self):
+        msg = QMessageBox(self)
+        msg.setWindowTitle("Licencia de Uso")
+        msg.setText("<b>Términos de Licencia de Uso Propietaria</b>")
+        msg.setInformativeText(
+            "Este software está protegido por leyes de derecho de autor y tratados internacionales.\n\n"
+            "Queda prohibida su copia, redistribución o modificación sin autorización expresa de Conetia Software."
+			"Con domicilio legal en la ciudad de Gral Alvear, Mendoza. Contacto telefono: 2625511108"
+        )
+        msg.setIcon(QMessageBox.Icon.Information)
+        msg.exec()
+
+    # Ventana modal "Acerca de"
+    def show_about_dialog(self):
+        msg = QMessageBox(self)
+        msg.setWindowTitle("Acerca de la Aplicación")
+        msg.setText("<b>ConectBioSync</b>")
+        msg.setInformativeText(
+            "Desarrollado por: <b>Conetia Software</b>\n"
+            "Soporte: martinez.aus@gmail.com - Telefono: 2625511108\n"
+            "Sitio Web: https://www.conetia.com\n\n"
+            "© 2026 Conetia. Todos los derechos reservados."
+        )
+        msg.setIcon(QMessageBox.Icon.Information)
+        msg.exec()
+
 
 app = QApplication(sys.argv)
-app.setWindowIcon(QIcon("resources/conectbiosync.ico"))
+app.setWindowIcon(QIcon("resources/isologo.ico"))
 app.setStyleSheet(ESTILO_APP)
- 
 ventana = VentanaPrincipal()
 ventana.show()
 sys.exit(app.exec())

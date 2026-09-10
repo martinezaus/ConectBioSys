@@ -6,6 +6,7 @@ relojes" de la app. También podés editarlo a mano si preferís: cada
 entrada es un diccionario con "tipo" ("hikvision" o "zkteco") y los
 parámetros que necesita el __init__ del adaptador correspondiente.
 """
+
 RELOJES = [
 	{
 		"tipo": 'zkteco',

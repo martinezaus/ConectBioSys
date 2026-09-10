@@ -6,7 +6,7 @@ ADAPTERS = {
 	"zkteco": ZKTecoAdapter,
 	# "Suprema": "",
     # "Anviz": "",
-    # "Dahua":"",
+    "dahua":"",
     # "Matrix Comsec":"",
     # "Virdi":"",
     # "Hanvon":"",

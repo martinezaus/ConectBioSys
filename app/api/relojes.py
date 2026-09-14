@@ -559,11 +559,13 @@ class ConfiguracionTablaEmpleadosDialog(QDialog):
 		self.campo_tabla = QLineEdit(config_actual.get("tabla", "empleados"))
 		self.campo_tabla_organizacion = QLineEdit(config_actual.get("tabla_org", "empleados"))
 		self.campo_columna_id = QLineEdit(config_actual.get("columna_id", ""))
+		self.campo_columna_id_interno = QLineEdit(config_actual.get("columna_id_interno", "id"))
 		self.campo_columna_nombre = QLineEdit(config_actual.get("columna_nombre", ""))
 		self.campo_columna_condicion = QLineEdit(config_actual.get("columna_condicion", ""))
 
 		form.addRow("Tabla:", self.campo_tabla)
 		form.addRow("Nombre Columna número tarjeta:", self.campo_columna_id)
+		form.addRow("Columna ID interno del empleado:", self.campo_columna_id_interno)
 		form.addRow("Nombre Columna apellido/nombre:", self.campo_columna_nombre)
 		form.addRow("Nombre Columna condicion:", self.campo_columna_condicion)
 		layout.addLayout(form)
@@ -576,16 +578,18 @@ class ConfiguracionTablaEmpleadosDialog(QDialog):
 	def _guardar(self):
 		tabla = self.campo_tabla.text().strip()
 		columna_id = self.campo_columna_id.text().strip()
+		columna_id_interno = self.campo_columna_id_interno.text().strip()
 		columna_nombre = self.campo_columna_nombre.text().strip()
 		columna_condicion = self.campo_columna_condicion.text().strip()
 		
-		if not tabla or not columna_id or not columna_nombre:
-			QMessageBox.warning(self, "Datos requeridos", "Completá los tres campos.")
+		if not tabla or not columna_id or not columna_nombre or not columna_id_interno:
+			QMessageBox.warning(self, "Datos requeridos", "Completá tabla, número de tarjeta, ID interno y nombre.")
 			return
 		try:
 			guardar_config_empleados({
 				"tabla": tabla,
 				"columna_id": columna_id,
+				"columna_id_interno": columna_id_interno,
 				"columna_nombre": columna_nombre,
 				"columna_condicion": columna_condicion
 			})

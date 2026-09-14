@@ -1,6 +1,8 @@
 
 from datetime import datetime
+from zoneinfo import ZoneInfo
 from sqlalchemy import text
+from app.api.empleados import resolver_id_empleado
 from resources.config_path import (
 	crear_engine_externo,
 	cargar_config_asistencias,
@@ -24,14 +26,14 @@ MAPA_METODO_A_CVER = {
 
 
 def _armar_valores(fila):
-	"""fila = (dispositivo_id, empleado_id, fecha_hora_str, tipo_evento_texto, metodo)
+	"""fila = (dispositivo_id, numero_reloj, fecha_hora_str, tipo_evento_texto, metodo)
 	tal como vienen de la tabla de exportación en main.py."""
 
-	dispositivo_id, empleado_id, fecha_hora_str, tipo_evento_texto, metodo = fila
+	dispositivo_id, numero_reloj, fecha_hora_str, tipo_evento_texto, metodo = fila
 
 	dt    = datetime.fromisoformat(str(fecha_hora_str))
 	fecha = dt.strftime("%Y-%m-%d")
-	hora  = dt.strftime("%H:%M:%S")
+	hora  = dt.time().replace(tzinfo=None)
 	tipo  = MAPA_TIPO.get(tipo_evento_texto, "E")
 
 	try:
@@ -41,7 +43,7 @@ def _armar_valores(fila):
 
 	c_ver = MAPA_METODO_A_CVER.get(str(metodo).lower(), 3)  # 3 = Manual por defecto
 
-	return empleado_id, fecha, hora, tipo, reloj, c_ver
+	return numero_reloj, fecha, hora, tipo, reloj, c_ver
 
 def enviar_marcaciones(filas):
 	"""Inserta filas en la tabla de asistencias configurada. Devuelve
@@ -71,9 +73,10 @@ def enviar_marcaciones(filas):
 	MAX_DETALLES = 15
 
 	with engine.begin() as conexion:
+		ids_empleados = {}
 		for fila in filas:
 			try:
-				empleado, fecha, hora, tipo, reloj, c_ver = _armar_valores(fila)
+				numero_reloj, fecha, hora, tipo, reloj, c_ver = _armar_valores(fila)
 			except Exception as e:
 				errores += 1
 				if len(detalle_errores) < MAX_DETALLES:
@@ -81,6 +84,10 @@ def enviar_marcaciones(filas):
 				continue
 			try:
 				with conexion.begin_nested():
+					clave = str(numero_reloj).strip()
+					if clave not in ids_empleados:
+						ids_empleados[clave] = resolver_id_empleado(conexion, clave)
+					empleado = ids_empleados[clave]
 					conexion.execute(sql, 
 			 		                 { "empleado_id": empleado, "fecha": fecha, "hora": hora, "tipo": tipo, "reloj": reloj, "c_ver": c_ver, }
 									)

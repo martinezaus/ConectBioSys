@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
 	QDialog,
 	QDialogButtonBox,
 	QTableWidget,
+	QTableView,
 	QTableWidgetItem,
 	QCheckBox,
 	QLabel,
@@ -27,7 +28,9 @@ from PySide6.QtCore import Qt
 from openpyxl import Workbook
 
 from app.database.database import Database
-from resources.config_relojes import RELOJES
+from app.modelo_marcaciones import ModeloMarcaciones
+from app.tareas import GestorTareas
+from app.operaciones import descargar, exportar_excel
 from resources.config_app import ESTILO_APP
 from app.api.relojes import ConfiguracionRelojesDialog, RangoFechasDialog
 
@@ -36,7 +39,7 @@ from app.api.empleados import obtener_mapa_empleados
 from app.api.asistencias import enviar_marcaciones
 
 ENCABEZADOS_MARCACIONES = ["Dispositivo", "Empleado", "Fecha y hora", "Tipo de evento", "Método"]
-RELOJES = cargar_relojes()
+RELOJES = []
 
 
 class TablaMarcacionesDialog(QDialog):
@@ -63,21 +66,12 @@ class TablaMarcacionesDialog(QDialog):
 		fila_acciones.addStretch()
 		layout.addLayout(fila_acciones)
 
-		self.tabla = QTableWidget()
-		self.tabla.setColumnCount(len(ENCABEZADOS_MARCACIONES) + 1)
-		self.tabla.setHorizontalHeaderLabels(["", *ENCABEZADOS_MARCACIONES])
-		self.tabla.setRowCount(len(filas))
-		self.tabla.setEditTriggers(QTableWidget.NoEditTriggers)
-
-		for fila_idx, fila in enumerate(filas):
-			checkbox = QCheckBox()
-			checkbox.setChecked(True)
-			self.tabla.setCellWidget(fila_idx, 0, checkbox)
-			for col_idx, valor in enumerate(fila, start=1):
-				item = QTableWidgetItem(str(valor))
-				self.tabla.setItem(fila_idx, col_idx, item)
-
-		self.tabla.resizeColumnsToContents()
+		self.tabla = QTableView()
+		self.modelo = ModeloMarcaciones(filas, ENCABEZADOS_MARCACIONES, self)
+		self.tabla.setModel(self.modelo)
+		self.tabla.setColumnWidth(0, 35)
+		self.tabla.setColumnWidth(3, 180)
+		self.tabla.horizontalHeader().setStretchLastSection(True)
 		layout.addWidget(self.tabla)
 
 		self.boton_marcar_todo.clicked.connect(lambda: self._marcar_todo(True))
@@ -103,26 +97,22 @@ class TablaMarcacionesDialog(QDialog):
 		self.accept()
 
 	def _marcar_todo(self, estado):
-		for fila_idx in range(self.tabla.rowCount()):
-			checkbox = self.tabla.cellWidget(fila_idx, 0)
-			if checkbox is not None:
-				checkbox.setChecked(estado)
+		self.modelo.marcar_todas(estado)
 
 	def filas_seleccionadas(self):
-		"""Devuelve las filas originales (tuplas) cuyo checkbox quedó tildado."""
-		seleccionadas = []
-		for fila_idx, fila in enumerate(self.filas):
-			checkbox = self.tabla.cellWidget(fila_idx, 0)
-			if checkbox is not None and checkbox.isChecked():
-				seleccionadas.append(fila)
-		return seleccionadas
+		return self.modelo.seleccionadas()
 
 class VentanaPrincipal(QMainWindow):
 
 	def __init__(self):
 		super().__init__()
 
-		self.db = Database()  # creo la base de datos
+		self.db = Database()  # Conexiones SQLite se abren dentro de cada operación.
+		self.tareas = GestorTareas(self)
+		self.tareas.ocupado.connect(self._estado_tarea)
+		self.tareas.progreso.connect(self._progreso_tarea)
+		self.tareas.resultado.connect(self._resultado_tarea)
+		self.tareas.error.connect(self._error_tarea)
 		self.setWindowTitle("ConectBioSync - Descarga de marcaciones de relojes biometricos")
 		self.resize(800, 600)
 
@@ -161,6 +151,7 @@ class VentanaPrincipal(QMainWindow):
 		# Área de mensajes
 		self.area_mensajes = QTextEdit()
 		self.area_mensajes.setReadOnly(True)
+		self.area_mensajes.document().setMaximumBlockCount(2000)
 		layout.addWidget(self.area_mensajes)
 
 
@@ -174,8 +165,41 @@ class VentanaPrincipal(QMainWindow):
 		self.boton_conectar2.clicked.connect(self.conectar_tarjeta)
 		self.boton_exportar.clicked.connect(self.exportar)
 		self.boton_configurar_relojes.clicked.connect(self.abrir_configuracion_relojes)
+		self._recargar_relojes()
+
+	def _iniciar_tarea(self, operacion, al_finalizar):
+		if self.tareas.en_curso(): return False
+		self._al_finalizar = al_finalizar
+		return self.tareas.iniciar(operacion)
+
+	def _estado_tarea(self, ocupado):
+		for boton in (self.boton_conectar, self.boton_conectar1, self.boton_conectar2,
+		              self.boton_exportar, self.boton_configurar_relojes):
+			boton.setEnabled(not ocupado)
+		self.barra_progreso.setVisible(ocupado)
+		self.barra_progreso.setRange(0, 0)
+		self.statusBar().showMessage('Tarea en curso. Podés minimizar y restaurar la ventana.' if ocupado else 'Listo.')
+
+	def _progreso_tarea(self, porcentaje, mensaje):
+		self.barra_progreso.setRange(0, 0 if porcentaje < 0 else 100)
+		if porcentaje >= 0: self.barra_progreso.setValue(porcentaje)
+		self.mostrar_mensaje(mensaje)
+
+	def _resultado_tarea(self, resultado):
+		self._al_finalizar(resultado)
+
+	def _error_tarea(self, mensaje):
+		self.mostrar_mensaje(mensaje)
+		QMessageBox.warning(self, 'No se pudo completar la tarea', mensaje)
+
+	def closeEvent(self, event):
+		if self.tareas.en_curso():
+			self.statusBar().showMessage('Esperá a que termine la tarea antes de cerrar. Podés minimizar la ventana.')
+			event.ignore()
+		else: event.accept()
 
 	def abrir_configuracion_relojes(self):
+		if self.tareas.en_curso(): return
 		""" Abre la pantalla de administración de relojes. Cada alta, edición o
 		baja se guarda al instante dentro de esa pantalla, así que al cerrarla
 		(sea como sea que se cierre) recargamos RELOJES en memoria. """
@@ -203,77 +227,22 @@ class VentanaPrincipal(QMainWindow):
 		self._descargar_marcaciones(desde, hasta, self.boton_conectar1)
 
 	def _descargar_marcaciones(self, desde, hasta, boton_disparador):
-		"""Conecta a cada reloj configurado y descarga/guarda las marcaciones
-		entre 'desde' y 'hasta' (inclusive). Es el motor común que usan los
-		botones 'Mes Anterior' y 'Ultimo 7 dias'."""
+		if self.tareas.en_curso(): return
+		if not RELOJES:
+			QMessageBox.information(self, 'Relojes', 'No hay relojes configurados.'); return
+		from copy import deepcopy
+		relojes = deepcopy(RELOJES)
+		ruta = str(self.db.ruta.resolve())
+		self._iniciar_tarea(lambda progreso: descargar(relojes, ruta, desde, hasta, progreso), self._descarga_finalizada)
 
-		self.mostrar_mensaje(f"Iniciando conexión con los relojes ({desde} a {hasta})...")
-		boton_disparador.setEnabled(False)
-		self.barra_progreso.setVisible(True)
-
-		total_guardadas = 0
-		for config_reloj in RELOJES:
-			dispositivo_id = config_reloj["params"].get("dispositivo_id", "?")
-			try:
-				adapter = crear_adaptador(config_reloj)
-			except ValueError as e:
-				self.mostrar_mensaje(f"[{dispositivo_id}] Error de configuración: {e}")
-				continue
-
-			self.mostrar_mensaje(f"[{dispositivo_id}] Conectando...")
-			QApplication.processEvents()   # fuerza a refrescar la UI (ver nota abajo)
-			if not adapter.conectar():
-				self.mostrar_mensaje(f"[{dispositivo_id}] No se pudo conectar.")
-				continue
-
-			self.mostrar_mensaje(f"[{dispositivo_id}] Conexión establecida. Descargando marcaciones...")
-			QApplication.processEvents()
-
-			try:
-				marcaciones = adapter.obtener_marcaciones(desde=desde, hasta=hasta)
-			except Exception as e:
-				self.mostrar_mensaje(f"[{dispositivo_id}] Error al obtener marcaciones: {e}")
-				adapter.desconectar()
-				continue
-
-			self.mostrar_mensaje(f"[{dispositivo_id}] {len(marcaciones)} marcaciones descargadas. Guardando...")
-
-			total = len(marcaciones)
-			self.barra_progreso.setRange(0, max(total, 1))
-			self.barra_progreso.setValue(0)
-
-			guardadas_de_este_reloj = 0
-			for i, lectura in enumerate(marcaciones, start=1):
-				try:
-					self.db.guardar_marcacion(
-						lectura.dispositivo_id,
-						lectura.reloj_user_id,
-						lectura.timestamp.isoformat(sep=" "),
-						lectura.tipo_evento,
-						lectura.metodo,
-					)
-					guardadas_de_este_reloj += 1
-				except Exception as e:
-					self.mostrar_mensaje(f"[{dispositivo_id}] Error guardando una marcación: {e}")
-
-				self.barra_progreso.setValue(i)
-				if i % 200 == 0:   # refrescar la UI cada tanto, no en cada vuelta (sería lento)
-					QApplication.processEvents()
-
-			total_guardadas += guardadas_de_este_reloj
-			self.mostrar_mensaje(f"[{dispositivo_id}] {guardadas_de_este_reloj} marcaciones guardadas en la base de datos.")
-
-			adapter.desconectar()
-			self.mostrar_mensaje(f"[{dispositivo_id}] Desconectado.")
-
-			self.barra_progreso.setRange(0, 0)   # vuelve a indeterminado para el próximo reloj
-
-		self.barra_progreso.setVisible(False)
-
-		self.mostrar_mensaje(f"Listo. Total de marcaciones guardadas: {total_guardadas}.")
-		boton_disparador.setEnabled(True)
+	def _descarga_finalizada(self, resultado):
+		guardadas, repetidas, errores = resultado
+		self.mostrar_mensaje(f'Listo. Guardadas: {guardadas}. Ya existentes: {repetidas}.')
+		for error in errores: self.mostrar_mensaje(error)
+		if errores: QMessageBox.warning(self, 'Descarga incompleta', '\n'.join(errores))
 
 	def conectar_tarjeta(self):
+		if self.tareas.en_curso(): return
 		""" Busca en la base de datos local las marcaciones de los últimos 30 días
 		(tomando hoy como referencia) para el número de tarjeta ingresado, y las
 		muestra en una tabla desde donde se pueden exportar. """
@@ -289,22 +258,11 @@ class VentanaPrincipal(QMainWindow):
 		desde, hasta = self.rango_ultimos_dias(30)
 		self.mostrar_mensaje(f"Buscando marcaciones de la tarjeta {tarjeta} ({desde} a {hasta})...")
 
-		try:
-			filas = self.obtener_marcaciones_por_tarjeta(tarjeta, desde, hasta)
-		except Exception as e:
-			self.mostrar_mensaje(f"Error al buscar marcaciones: {e}")
-			return
-
-		if not filas:
-			self.mostrar_mensaje(f"No se encontraron marcaciones para la tarjeta {tarjeta}.")
-			QMessageBox.information(self, "Tarjeta", "No hay marcaciones para esa tarjeta en los últimos 30 días.")
-			return
-
-		self.mostrar_mensaje(f"{len(filas)} marcaciones encontradas para la tarjeta {tarjeta}.")
-		self._mostrar_y_exportar(filas, f"Marcaciones - Tarjeta {tarjeta}")
+		self._iniciar_tarea(lambda progreso: self.db.obtener_marcaciones_filtradas(desde, hasta, tarjeta=tarjeta),
+			lambda filas: self._mostrar_y_exportar(filas, f'Marcaciones - Tarjeta {tarjeta}'))
 
 	def obtener_marcaciones_por_tarjeta(self, tarjeta, desde, hasta):
-		if not hasattr(self.db, "obtener_marcaciones_por_tarjeta"):
+		if not hasattr(self.db, "obtener_marcaciones_filtradas"):
 			raise NotImplementedError(
 				"Falta implementar 'obtener_marcaciones_por_tarjeta' en app/database/database.py"
 			)
@@ -319,6 +277,7 @@ class VentanaPrincipal(QMainWindow):
 
 
 	def exportar(self):
+		if self.tareas.en_curso(): return
 		""" Pide un rango de fechas, muestra en una tabla las marcaciones
 			guardadas en ese rango y deja que el usuario elija cuáles exportar. """
 		
@@ -330,25 +289,15 @@ class VentanaPrincipal(QMainWindow):
 		
 		desde, hasta = dialogo_rango.obtener_rango()
 		self.mostrar_mensaje("Aguarde... buscando la información.")
-		QApplication.processEvents()
-
-		try:
-			filas = self.obtener_todas_marcaciones(desde, hasta)
-		except Exception as e:
-			self.mostrar_mensaje(f"Error al leer la base de datos: {e}")
-			return
-		
-		if not filas:
-			self.mostrar_mensaje(f"No hay marcaciones guardadas entre {desde} y {hasta}.")
-			QMessageBox.information(self, "Exportar", "No hay marcaciones guardadas en ese rango de fechas.")
-			return
-		
-		self._mostrar_y_exportar(filas, f"Marcaciones ({desde} a {hasta})")
+		self._iniciar_tarea(lambda progreso: self.db.obtener_todas_marcaciones(desde, hasta),
+			lambda filas: self._mostrar_y_exportar(filas, f'Marcaciones ({desde} a {hasta})'))
 
 	def _mostrar_y_exportar(self, filas, titulo):
 		"""Abre el diálogo de tabla con checkboxes y, si el usuario confirma,
 		exporta a Excel las filas que quedaron tildadas."""
 
+		if not filas:
+			QMessageBox.information(self, "Marcaciones", "No hay marcaciones para el rango seleccionado."); return
 		dialogo = TablaMarcacionesDialog(filas, titulo, parent=self)
 		if dialogo.exec() != QDialog.Accepted:
 			self.mostrar_mensaje("Exportación cancelada.")
@@ -375,39 +324,8 @@ class VentanaPrincipal(QMainWindow):
 			self.mostrar_mensaje("Exportación cancelada.")
 			return
 		
-		mapa_empleados = {}
-		try:
-			mapa_empleados = obtener_mapa_empleados()
-			self.mostrar_mensaje(f"{len(mapa_empleados)} empleados encontrados en MySQL para hacer el cruce.")
-			
-		except Exception as e:
-			self.mostrar_mensaje(f"No se pudo buscar nombres en MySQL, se exporta sin ese dato: {e}")
-		
-		wb = Workbook()
-		hoja = wb.active
-		hoja.title = "Marcaciones"
-		# hoja.append(ENCABEZADOS_MARCACIONES)
-
-		encabezados = list(ENCABEZADOS_MARCACIONES)
-		indice_empleado = encabezados.index("Empleado")
-		encabezados.insert(indice_empleado + 1, "Nombre")
-		hoja.append(encabezados)
-
-		for fila in seleccionadas:
-			fila = list(fila)
-			numero_tarjeta = str(fila[indice_empleado])
-			nombre = mapa_empleados.get(numero_tarjeta, "")
-			fila.insert(indice_empleado + 1, nombre)
-			hoja.append(fila)
-
-		# Ancho de columnas legible
-		anchos = [15, 15, 20, 20, 15, 15]
-		for i, ancho in enumerate(anchos, start=1):
-			hoja.column_dimensions[hoja.cell(row=1, column=i).column_letter].width = ancho
-
-		wb.save(ruta)
-		self.mostrar_mensaje(f"Archivo exportado: {ruta} ({len(seleccionadas)} marcaciones).")
-		QMessageBox.information(self, "Exportar", f"Se exportaron {len(seleccionadas)} marcaciones a:\n{ruta}")
+		self._iniciar_tarea(lambda progreso: exportar_excel(seleccionadas, ruta, ENCABEZADOS_MARCACIONES, progreso),
+			lambda archivo: QMessageBox.information(self, 'Excel exportado', f'Archivo guardado: {archivo}'))
 
 
 	def _enviar_a_mysql(self, seleccionadas):
@@ -420,15 +338,10 @@ class VentanaPrincipal(QMainWindow):
 			self.mostrar_mensaje("Envío cancelado.")
 			return
 		self.mostrar_mensaje("Enviando marcaciones al sistema web...")
-		QApplication.processEvents()
+		self._iniciar_tarea(lambda progreso: enviar_marcaciones(seleccionadas), self._envio_finalizado)
 
-		try:
-			insertadas, errores, detalle_errores = enviar_marcaciones(seleccionadas)
-		except Exception as e:
-			self.mostrar_mensaje(f"Error al enviar a la base de datos: {e}")
-			QMessageBox.critical(self, "Error", f"No se pudo enviar:\n{e}")
-			return
-		
+	def _envio_finalizado(self, resultado):
+		insertadas, errores, detalle_errores = resultado
 		self.mostrar_mensaje(f"Enviadas: {insertadas}. Con error o duplicadas: {errores}.")
 		if detalle_errores:
 			self.mostrar_mensaje("Detalle de los primeros errores:")
@@ -553,9 +466,10 @@ class AppFooter(QFrame):
         msg.exec()
 
 
-app = QApplication(sys.argv)
-app.setWindowIcon(QIcon("resources/isologo.ico"))
-app.setStyleSheet(ESTILO_APP)
-ventana = VentanaPrincipal()
-ventana.show()
-sys.exit(app.exec())
+if __name__ == "__main__":
+	app = QApplication(sys.argv)
+	app.setWindowIcon(QIcon("resources/isologo.ico"))
+	app.setStyleSheet(ESTILO_APP)
+	ventana = VentanaPrincipal()
+	ventana.show()
+	sys.exit(app.exec())

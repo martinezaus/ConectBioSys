@@ -5,7 +5,7 @@ Instalación: pip install pyzk
 """
 import logging
 from datetime import datetime, timedelta
-from typing import List
+from typing import List, Optional
 from zk import ZK
 
 from .base import RelojAdapter
@@ -80,6 +80,7 @@ class ZKTecoAdapter(RelojAdapter):
             )
         except Exception as e:
             log.error(f"[{self.dispositivo_id}] Error leyendo marcaciones: {e}")
+            raise
         return marcaciones
     
 
@@ -107,8 +108,8 @@ class ZKTecoAdapter(RelojAdapter):
     def desconectar(self) -> None:
         if self._conn:
             try:
-                self._conn.enable_device()
-                self._conn.disconnect()
+                try: self._conn.enable_device()
+                finally: self._conn.disconnect()
                 log.info(f"[{self.dispositivo_id}] Desconectado")
             except Exception as e:
                 log.warning(f"[{self.dispositivo_id}] Error al desconectar: {e}")

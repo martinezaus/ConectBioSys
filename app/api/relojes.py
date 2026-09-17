@@ -1,3 +1,5 @@
+from app.tareas import GestorTareas
+from app.operaciones import limpiar_buffers, probar_conexion
 import datetime
 import importlib
 
@@ -21,7 +23,8 @@ from PySide6.QtWidgets import (
 	QDateEdit,
 )
 
-from PySide6.QtCore import QDate
+from PySide6.QtCore import QDate, QThread, Signal
+from app.api.organizaciones import cargar_catalogo, id_organizacion
 
 from resources.config_path import (
 	cargar_config_conexion,
@@ -310,6 +313,8 @@ class ConfiguracionRelojesDialog(QDialog):
 	def closeEvent(self, event):
 		"""Cada alta/edición/baja se guarda al toque, así que no hay cambios
 		pendientes que se puedan perder al cerrar: se cierra directamente."""
+		if hasattr(self, "_tarea") and self._tarea.en_curso():
+			event.ignore(); return
 		self.accept()
 		event.accept()
 
@@ -337,36 +342,20 @@ class ConfiguracionRelojesDialog(QDialog):
 		if not ok or texto.strip() != "BORRAR":
 			return
 		
-		self.boton_limpiar_buffer.setEnabled(False)
-		QApplication.processEvents()
-		relojes_guardados = cargar_relojes()
-		resultados = []
-		for config_reloj in relojes_guardados:
-			dispositivo_id = config_reloj["params"].get("dispositivo_id", "?")
-			try:
-				adapter = crear_adaptador(config_reloj)
-			except ValueError as e:
-				resultados.append(f"[{dispositivo_id}] Error de configuración: {e}")
-				continue
+		if hasattr(self, '_tarea') and self._tarea.en_curso(): return
+		self._tarea = GestorTareas(self)
+		self._tarea.ocupado.connect(self._bloquear_limpieza)
+		self._tarea.resultado.connect(lambda mensaje: QMessageBox.information(self, 'Limpieza finalizada', mensaje))
+		self._tarea.error.connect(lambda mensaje: QMessageBox.warning(self, 'Limpieza', mensaje))
+		relojes = cargar_relojes()
+		self._tarea.iniciar(lambda progreso: limpiar_buffers(relojes, progreso))
 
-			if not hasattr(adapter, "limpiar_buffer"):
-				resultados.append(f"[{dispositivo_id}] No soporta limpiar buffer. Se omite.")
-				continue
+	def _bloquear_limpieza(self, ocupado):
+		for boton in self.findChildren(QPushButton): boton.setEnabled(not ocupado)
 
-			if not adapter.conectar():
-				resultados.append(f"[{dispositivo_id}] No se pudo conectar. Se omite.")
-				continue
-
-			try:
-				adapter.limpiar_buffer()
-				resultados.append(f"[{dispositivo_id}] Buffer limpiado correctamente.")
-			except Exception as e:
-				resultados.append(f"[{dispositivo_id}] Error al limpiar buffer: {e}")
-			finally:
-				adapter.desconectar()
-
-		self.boton_limpiar_buffer.setEnabled(True)
-		QMessageBox.information(self, "Limpieza finalizada", "\n".join(resultados) or "No hay relojes configurados.")
+	def done(self, resultado):
+		if hasattr(self, '_tarea') and self._tarea.en_curso(): return
+		super().done(resultado)
 
 	def _abrir_config_conexion(self):
 		ConfiguracionConexionDialog(parent=self).exec()
@@ -517,16 +506,26 @@ class ConfiguracionConexionDialog(QDialog):
 		}
 
 	def _probar_conexion(self):
+		if hasattr(self, '_tarea') and self._tarea.en_curso(): return
 		config = self._armar_config()
-		if config is None:
-			return
-		try:
-			engine = crear_engine_externo(config)
-			with engine.connect():
-				pass
-			QMessageBox.information(self, "Conexión OK", "La conexión se probó con éxito.")
-		except Exception as e:
-			QMessageBox.critical(self, "Error de conexión", f"No se pudo conectar:\n{e}")
+		if config is None: return
+		self._tarea = GestorTareas(self)
+		self._tarea.ocupado.connect(self._bloquear_prueba)
+		self._tarea.resultado.connect(lambda mensaje: QMessageBox.information(self, 'Conexión OK', mensaje))
+		self._tarea.error.connect(lambda mensaje: QMessageBox.warning(self, 'Error de conexión', mensaje))
+		self._tarea.iniciar(lambda progreso: probar_conexion(config, progreso))
+
+	def _bloquear_prueba(self, ocupado):
+		for boton in self.findChildren(QPushButton): boton.setEnabled(not ocupado)
+		self.boton_probar.setText('Probando conexión…' if ocupado else 'Probar conexión')
+
+	def done(self, resultado):
+		if hasattr(self, '_tarea') and self._tarea.en_curso(): return
+		super().done(resultado)
+
+	def closeEvent(self, event):
+		if hasattr(self, '_tarea') and self._tarea.en_curso(): event.ignore()
+		else: super().closeEvent(event)
 
 	def _guardar(self):
 		config = self._armar_config()
@@ -538,6 +537,25 @@ class ConfiguracionConexionDialog(QDialog):
 			QMessageBox.critical(self, "Error al guardar", f"No se pudo guardar la configuración:\n{e}")
 			return
 		self.accept()
+
+class CargaOrganizaciones(QThread):
+    resultado = Signal(object, object)
+    error = Signal(str)
+
+    def __init__(self, config, conexion, parent=None):
+        super().__init__(parent)
+        self.config = dict(config)
+        self.conexion = dict(conexion)
+
+    def run(self):
+        try:
+            filas, relacion = cargar_catalogo(self.config, self.conexion)
+            self.resultado.emit(filas, relacion)
+        except ValueError as exc:
+            self.error.emit(str(exc))
+        except Exception:
+            self.error.emit('No se pudieron cargar las organizaciones. Revisá la conexión y los permisos de lectura.')
+
 
 class ConfiguracionTablaEmpleadosDialog(QDialog):
 	"""Define en qué tabla/columnas está el nombre de cada empleado, sobre
@@ -557,30 +575,47 @@ class ConfiguracionTablaEmpleadosDialog(QDialog):
 		form = QFormLayout()
 
 		self.campo_tabla = QLineEdit(config_actual.get("tabla", "empleados"))
-		self.campo_tabla_organizacion = QLineEdit(config_actual.get("tabla_org", "empleados"))
+		self._config_actual = dict(config_actual)
+		self._relacion = None
 		self.campo_columna_id = QLineEdit(config_actual.get("columna_id", ""))
 		self.campo_columna_id_interno = QLineEdit(config_actual.get("columna_id_interno", "id"))
 		self.campo_columna_nombre = QLineEdit(config_actual.get("columna_nombre", ""))
-		self.campo_columna_condicion = QLineEdit(config_actual.get("columna_condicion", ""))
+		self.combo_organizacion = QComboBox()
+		self.combo_organizacion.addItem('Cargando organizaciones…', None)
+		self.combo_organizacion.setEnabled(False)
+		self.estado_organizaciones = QLabel()
+		self.estado_organizaciones.setWordWrap(True)
+		self.boton_recargar_organizaciones = QPushButton('Actualizar organizaciones')
+		self.boton_recargar_organizaciones.clicked.connect(self._cargar_organizaciones)
 
 		form.addRow("Tabla:", self.campo_tabla)
 		form.addRow("Nombre Columna número tarjeta:", self.campo_columna_id)
 		form.addRow("Columna ID interno del empleado:", self.campo_columna_id_interno)
 		form.addRow("Nombre Columna apellido/nombre:", self.campo_columna_nombre)
-		form.addRow("Nombre Columna condicion:", self.campo_columna_condicion)
+		form.addRow('Organización:', self.combo_organizacion)
+		form.addRow(self.estado_organizaciones)
+		form.addRow(self.boton_recargar_organizaciones)
 		layout.addLayout(form)
 
 		botones = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
 		botones.accepted.connect(self._guardar)
 		botones.rejected.connect(self.reject)
 		layout.addWidget(botones)
+		self.boton_guardar = botones.button(QDialogButtonBox.Save)
+		self._cargar_organizaciones()
 
 	def _guardar(self):
 		tabla = self.campo_tabla.text().strip()
 		columna_id = self.campo_columna_id.text().strip()
 		columna_id_interno = self.campo_columna_id_interno.text().strip()
 		columna_nombre = self.campo_columna_nombre.text().strip()
-		columna_condicion = self.campo_columna_condicion.text().strip()
+		organizacion = self.combo_organizacion.currentData()
+		if organizacion is None or self._relacion is None:
+			QMessageBox.warning(self, 'Organización', 'Seleccioná una organización válida antes de guardar.')
+			return
+		if tabla != self._tabla_consultada:
+			QMessageBox.warning(self, 'Tabla modificada', 'Actualizá las organizaciones después de cambiar la tabla de empleados.')
+			return
 		
 		if not tabla or not columna_id or not columna_nombre or not columna_id_interno:
 			QMessageBox.warning(self, "Datos requeridos", "Completá tabla, número de tarjeta, ID interno y nombre.")
@@ -591,12 +626,63 @@ class ConfiguracionTablaEmpleadosDialog(QDialog):
 				"columna_id": columna_id,
 				"columna_id_interno": columna_id_interno,
 				"columna_nombre": columna_nombre,
-				"columna_condicion": columna_condicion
+				"organizacion_id": organizacion,
+				**self._relacion
 			})
 		except Exception as e:
 			QMessageBox.critical(self, "Error al guardar", f"No se pudo guardar:\n{e}")
 			return
 		self.accept()
+
+
+	def _cargar_organizaciones(self):
+		if hasattr(self, '_carga_org') and self._carga_org.isRunning(): return
+		self.combo_organizacion.setEnabled(False)
+		self.boton_guardar.setEnabled(False)
+		self.boton_recargar_organizaciones.setEnabled(False)
+		self.estado_organizaciones.setText('Consultando el catálogo…')
+		self._seleccion_anterior = self.combo_organizacion.currentData()
+		if self._seleccion_anterior is None:
+			try: self._seleccion_anterior = id_organizacion(self._config_actual)
+			except ValueError: pass
+		self._tabla_consultada = self.campo_tabla.text().strip()
+		config = dict(self._config_actual, tabla=self._tabla_consultada)
+		try:
+			self._carga_org = CargaOrganizaciones(config, cargar_config_conexion(), self)
+		except Exception:
+			self._error_organizaciones('No se pudo leer la configuración de conexión.')
+			return
+		self._carga_org.resultado.connect(self._recibir_organizaciones)
+		self._carga_org.error.connect(self._error_organizaciones)
+		self._carga_org.finished.connect(lambda: self.boton_recargar_organizaciones.setEnabled(True))
+		self._carga_org.start()
+
+	def _recibir_organizaciones(self, filas, relacion):
+		self._relacion = relacion
+		self.combo_organizacion.clear()
+		self.combo_organizacion.addItem('Seleccioná una organización', None)
+		for identificador, nombre in filas:
+			self.combo_organizacion.addItem(nombre, identificador)
+		indice = self.combo_organizacion.findData(self._seleccion_anterior)
+		if indice >= 0: self.combo_organizacion.setCurrentIndex(indice)
+		self.combo_organizacion.setEnabled(bool(filas))
+		self.boton_guardar.setEnabled(bool(filas))
+		self.estado_organizaciones.setText('Se usará el ID de la organización para filtrar los empleados.' if filas else 'No hay organizaciones cargadas en la base.')
+
+	def _error_organizaciones(self, mensaje):
+		self._relacion = None
+		self.combo_organizacion.clear()
+		self.combo_organizacion.addItem('Organizaciones no disponibles', None)
+		self.estado_organizaciones.setText(mensaje)
+		self.boton_recargar_organizaciones.setEnabled(True)
+
+	def done(self, resultado):
+		if hasattr(self, '_carga_org') and self._carga_org.isRunning(): return
+		super().done(resultado)
+
+	def closeEvent(self, event):
+		if hasattr(self, '_carga_org') and self._carga_org.isRunning(): event.ignore()
+		else: super().closeEvent(event)
 
 class ConfiguracionTablaAsistenciasDialog(QDialog):
 	"""Define en qué tabla/columnas del sistema web hay que insertar las

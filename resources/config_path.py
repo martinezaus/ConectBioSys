@@ -109,7 +109,15 @@ def crear_engine_externo(config=None):
 			f"{info['url_scheme']}://{config['usuario']}:{config['password']}"
 			f"@{config['host']}:{config['puerto']}/{config['base_datos']}"
 		)
-	return create_engine(url, connect_args={"connect_timeout": 10} if motor != "sqlite" else {})
+	if motor == 'mysql':
+		args = {'connect_timeout': 10, 'read_timeout': 30, 'write_timeout': 30}
+	elif motor == 'postgresql':
+		args = {'connect_timeout': 10, 'options': '-c statement_timeout=30000'}
+	elif motor == 'sqlserver':
+		args = {'timeout': 10}
+	else:
+		args = {'timeout': 10}
+	return create_engine(url, connect_args=args)
 
 
 def _validar_identificador_sql(valor):
@@ -148,18 +156,18 @@ def cargar_config_empleados():
 
 
 def guardar_config_empleados(config):
-	ruta = get_config_empleados_path()
-	contenido = (
-		'TABLA_EMPLEADOS_CONFIG = {\n'
-		f'    "tabla": {config["tabla"]!r},\n'
-		f'    "columna_id": {config["columna_id"]!r},\n'
-		f'    "columna_id_interno": {config.get("columna_id_interno", "id")!r},\n'
-		f'    "columna_nombre": {config["columna_nombre"]!r},\n'
-		f'    "columna_condicion": {config["columna_condicion"]!r},\n'
-		'}\n'
-	)
-	with open(ruta, "w", encoding="utf-8") as f:
-		f.write(contenido)
+    from app.api.organizaciones import id_organizacion
+    import pprint
+    valores = dict(config)
+    for clave in ('tabla', 'columna_id', 'columna_id_interno', 'columna_nombre'):
+        _validar_identificador_sql(valores[clave])
+    valores['organizacion_id'] = id_organizacion(valores)
+    valores.pop('columna_condicion', None)
+    ruta = get_config_empleados_path()
+    temporal = ruta + '.tmp'
+    with open(temporal, 'w', encoding='utf-8') as archivo:
+        archivo.write('TABLA_EMPLEADOS_CONFIG = ' + pprint.pformat(valores, sort_dicts=False) + '\n')
+    os.replace(temporal, ruta)
 
 
 # ---------- Mapeo de tabla: ASISTENCIAS (escritura) ----------

@@ -72,29 +72,32 @@ def enviar_marcaciones(filas):
 	detalle_errores = []  # primeros N errores reales, para poder diagnosticar
 	MAX_DETALLES = 15
 
-	with engine.begin() as conexion:
-		ids_empleados = {}
-		for fila in filas:
-			try:
-				numero_reloj, fecha, hora, tipo, reloj, c_ver = _armar_valores(fila)
-			except Exception as e:
-				errores += 1
-				if len(detalle_errores) < MAX_DETALLES:
-					detalle_errores.append(f"{fila}: no se pudo interpretar la fila ({e})")
-				continue
-			try:
-				with conexion.begin_nested():
-					clave = str(numero_reloj).strip()
-					if clave not in ids_empleados:
-						ids_empleados[clave] = resolver_id_empleado(conexion, clave)
-					empleado = ids_empleados[clave]
-					conexion.execute(sql, 
-			 		                 { "empleado_id": empleado, "fecha": fecha, "hora": hora, "tipo": tipo, "reloj": reloj, "c_ver": c_ver, }
-									)
-				insertadas += 1
-			except Exception as e:
-				errores += 1
-				if len(detalle_errores) < MAX_DETALLES:
-					detalle_errores.append(f"{fila}: {e}")
+	try:
+		with engine.begin() as conexion:
+			ids_empleados = {}
+			for fila in filas:
+				try:
+					numero_reloj, fecha, hora, tipo, reloj, c_ver = _armar_valores(fila)
+				except Exception as e:
+					errores += 1
+					if len(detalle_errores) < MAX_DETALLES:
+						detalle_errores.append(f"{fila}: no se pudo interpretar la fila ({e})")
+					continue
+				try:
+					with conexion.begin_nested():
+						clave = str(numero_reloj).strip()
+						if clave not in ids_empleados:
+							ids_empleados[clave] = resolver_id_empleado(conexion, clave)
+						empleado = ids_empleados[clave]
+						conexion.execute(sql,
+							{ "empleado_id": empleado, "fecha": fecha, "hora": hora, "tipo": tipo, "reloj": reloj, "c_ver": c_ver, }
+										)
+					insertadas += 1
+				except Exception as e:
+					errores += 1
+					if len(detalle_errores) < MAX_DETALLES:
+						detalle_errores.append(f"{fila}: {e}")
+	finally:
+		engine.dispose()
 
 	return insertadas, errores, detalle_errores

@@ -148,8 +148,7 @@ class HikvisionAdapter(RelojAdapter):
 
                 if resp.status_code != 200:
                     log.error(f"[{self.dispositivo_id}] Error en respuesta del reloj: HTTP {resp.status_code}")
-                    print(f"Cuerpo del error {resp.status_code}: {resp.text}")
-                    break
+                    resp.raise_for_status()
 
                 data = resp.json()
 
@@ -202,7 +201,7 @@ class HikvisionAdapter(RelojAdapter):
 
             except Exception as e:
                 log.error(f"[{self.dispositivo_id}] Error leyendo o parseando eventos: {e}")
-                break
+                raise
 
         log.info(f"[{self.dispositivo_id}] {len(marcaciones)} marcaciones descargadas")
         return marcaciones

@@ -1,13 +1,9 @@
-import os
-os.environ.setdefault('QT_QPA_PLATFORM','offscreen')
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 from sqlalchemy import create_engine,text
-from PySide6.QtWidgets import QApplication
 from app.api import empleados,organizaciones
-from app.api.relojes import ConfiguracionTablaEmpleadosDialog
 from resources import config_path
 
 class OrganizacionTests(unittest.TestCase):
@@ -55,17 +51,4 @@ class OrganizacionTests(unittest.TestCase):
             c.execute(text('UPDATE empleados SET organizacion_id=CASE id WHEN 92 THEN 1 ELSE 2 END'))
         with patch.object(empleados,'cargar_config_empleados',return_value=self.config),self.engine.connect() as c:
             self.assertEqual(empleados.resolver_id_empleado(c,'93'),92)
-    def test_selector_preserves_saved_id(self):
-        app=QApplication.instance() or QApplication([])
-        with patch('app.api.relojes.cargar_config_empleados',return_value=self.config),patch('app.api.relojes.cargar_config_conexion',return_value={}),patch('app.api.relojes.cargar_catalogo',return_value=([('1','Empresa A'),('2','Empresa B')],{'tabla_relacion_organizacion':'legajo','columna_empleado_relacion':'empleados_id'})):
-            dialog=ConfiguracionTablaEmpleadosDialog()
-            self.assertTrue(dialog._carga_org.wait(3000))
-            app.processEvents()
-            self.assertEqual(dialog.combo_organizacion.currentText(),'Empresa A')
-            dialog.combo_organizacion.setCurrentIndex(2)
-            with patch('app.api.relojes.guardar_config_empleados') as guardar:
-                dialog._guardar()
-                self.assertEqual(guardar.call_args.args[0]['organizacion_id'],'2')
-            dialog.close()
-
 if __name__=='__main__':unittest.main()

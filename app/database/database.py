@@ -4,8 +4,8 @@ from pathlib import Path
 
 class Database:
 
-	def __init__(self):
-		self.ruta=Path("data/marcaciones.db")
+	def __init__(self, ruta=None):
+		self.ruta = Path(ruta) if ruta is not None else Path("data/marcaciones.db")
 		
 		print("Base de datos:")
 		print(self.ruta.resolve())
@@ -155,6 +155,5 @@ class Database:
 		hasta = hasta or f"{anio_actual}-12-31"
 
 		return self.obtener_marcaciones_filtradas(desde, hasta)
-
 
 

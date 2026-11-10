@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Ingresar | ConectBioSync</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='web.css') }}">
+</head>
+<body class="login-page">
+  <main class="login-card">
+    <div class="brand-mark">CB</div>
+    <p class="eyebrow">CONECTIA SOFTWARE</p>
+    <h1>ConectBioSync</h1>
+    <p class="muted">Iniciá sesión para administrar y sincronizar tus relojes.</p>
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% for category, message in messages %}
+        <div class="notice {{ category }}">{{ message }}</div>
+      {% endfor %}
+    {% endwith %}
+    <form method="post" action="{{ url_for('login_post') }}">
+      <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
+      <label>Usuario
+        <input name="username" autocomplete="username" required autofocus>
+      </label>
+      <label>Contraseña
+        <input type="password" name="password" autocomplete="current-password" required>
+      </label>
+      <button class="primary full-width" type="submit">Ingresar</button>
+    </form>
+  </main>
+</body>
+</html>

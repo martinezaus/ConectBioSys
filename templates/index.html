@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ConectBioSync</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='web.css') }}">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="{{ url_for('index') }}">
+      <!-- 
+      <span class="brand-mark small">CB</span>
+    -->
+      <img class="brand-mark small" src="{{ url_for('static', filename='img/conectbiosync-icono.svg') }}" />
+      <span><strong>ConectBioSync</strong><small>Sincronización biométrica</small></span>
+    </a>
+    <div class="top-actions">
+      <span class="user-name">{{ user }}</span>
+      <form method="post" action="{{ url_for('logout') }}">
+        <input type="hidden" name="_csrf_token" value="{{ csrf }}">
+        <button class="button-quiet" type="submit">Cerrar sesión</button>
+      </form>
+    </div>
+  </header>
+  <main class="page">
+    <section class="welcome">
+      <div>
+        <p class="eyebrow">PANEL DE CONTROL</p>
+        <h1>Hola, {{ user }}</h1>
+        <p class="muted">Gestioná tus relojes y las marcaciones desde la red local.</p>
+      </div>
+      <div class="date-chip">{{ today }}</div>
+    </section>
+
+    <section class="summary-grid">
+      <article class="summary-card"><span class="summary-icon">◷</span><div><span class="muted">Marcaciones este mes</span><strong>{{ month_count }}</strong></div></article>
+      <article class="summary-card"><span class="summary-icon green">●</span><div><span class="muted">Servidor</span><strong id="server-status">Conectado</strong></div></article>
+      <article class="summary-card"><span class="summary-icon blue">⌚</span><div><span class="muted">Relojes configurados</span><strong id="clock-count">—</strong></div></article>
+    </section>
+
+    <section class="panel">
+      <div class="panel-heading">
+        <div><p class="eyebrow">SINCRONIZACIÓN</p><h2>Descargar marcaciones</h2></div>
+        <span class="muted">Las tareas se ejecutan en segundo plano.</span>
+      </div>
+      <div class="action-row">
+        <button class="primary" data-download="previous_month">Descargar mes anterior</button>
+        <button class="secondary" data-download="last_7_days">Descargar últimos 7 días</button>
+        <button class="danger-outline" id="clean-buffers">Limpiar buffer de relojes</button>
+      </div>
+      <form id="custom-download-form" class="date-download-form">
+        <label>Desde<input type="date" name="since" value="{{ today[:4] }}-{{ today[5:7] }}-01" max="{{ today }}" required></label>
+        <label>Hasta<input type="date" name="until" value="{{ today }}" max="{{ today }}" required></label>
+        <button class="secondary" type="submit">Descargar por fecha</button>
+      </form>
+      <p class="muted download-help">Se descargarán las marcaciones del rango elegido desde todos los relojes configurados.</p>
+      <div id="download-message" class="muted" aria-live="polite"></div>
+      <div id="jobs" class="jobs" aria-live="polite"></div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-heading">
+        <div><p class="eyebrow">CONSULTA Y EXPORTACIÓN</p><h2>Buscar marcaciones</h2></div>
+      </div>
+      <form id="search-form" class="search-grid">
+        <label>Desde<input type="date" name="since" value="{{ today[:4] }}-{{ today[5:7] }}-01" required></label>
+        <label>Hasta<input type="date" name="until" value="{{ today }}" required></label>
+        <label>Número de tarjeta <span class="muted">(opcional)</span><input name="card" placeholder="Todas las tarjetas"></label>
+        <button class="primary align-end" type="submit">Buscar</button>
+      </form>
+      <div id="query-message" class="muted query-message"></div>
+      <div id="results" hidden>
+        <div class="results-toolbar">
+          <div><strong id="result-count">0</strong> marcaciones <span id="selected-count" class="muted">· 0 seleccionadas</span> <span class="muted">· Página de 20 registros</span></div>
+          <div class="action-row compact">
+            <button class="secondary small-button" id="select-page" type="button">Seleccionar página</button>
+            <button class="secondary small-button" id="select-all" type="button">Seleccionar todas las marcaciones</button>
+            <button class="primary small-button" id="export-excel" type="button">Exportar Excel</button>
+            <button class="secondary small-button" id="send-db" type="button">Enviar a asistencias</button>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table><thead><tr><th><input id="check-page" type="checkbox" aria-label="Seleccionar página"></th><th>Dispositivo</th><th>Empleado</th><th>Fecha y hora</th><th>Tipo de evento</th><th>Método</th></tr></thead><tbody id="rows"></tbody></table>
+        </div>
+        <div class="pagination">
+          <button class="secondary small-button" id="previous-page" type="button">Anterior</button>
+          <span id="page-label" class="muted"></span>
+          <button class="secondary small-button" id="next-page" type="button">Siguiente</button>
+        </div>
+      </div>
+    </section>
+
+    {% if is_admin %}
+    <section class="panel">
+      <details id="settings">
+        <summary><span><p class="eyebrow">ADMINISTRACIÓN</p><h2>Configuración</h2></span><span class="muted">Conexión, relojes y mapeo de tablas</span></summary>
+        <p class="muted settings-help">Completá cada formulario y guardá sus cambios. Los campos muestran los nombres de tablas y columnas ya configurados; podés escribir o editar esos valores. Los cambios aplican a todos los usuarios.</p>
+        <div class="settings-tabs" role="tablist" aria-label="Secciones de configuración">
+          <button class="settings-tab active" role="tab" aria-selected="true" aria-controls="tab-connection" data-settings-tab="connection">Conexión</button>
+          <button class="settings-tab" role="tab" aria-selected="false" aria-controls="tab-clocks" data-settings-tab="clocks">Relojes</button>
+          <button class="settings-tab" role="tab" aria-selected="false" aria-controls="tab-employees" data-settings-tab="employees">Empleados</button>
+          <button class="settings-tab" role="tab" aria-selected="false" aria-controls="tab-assistances" data-settings-tab="assistances">Marcaciones</button>
+        </div>
+        <div class="settings-tab-panel" id="tab-connection" role="tabpanel">
+          <form id="connection-form" class="settings-form">
+            <label>Motor<select name="motor" id="connection-engine" required></select></label>
+            <div class="connection-fields" id="network-fields">
+              <label>Servidor / host<input name="host" autocomplete="off"></label>
+              <label>Puerto<input name="puerto" type="number" min="1" max="65535"></label>
+              <label>Base de datos<input name="base_datos" autocomplete="off"></label>
+              <label>Usuario<input name="usuario" autocomplete="username"></label>
+              <label>Contraseña<input name="password" type="password" autocomplete="new-password" placeholder="Vacío conserva la guardada"></label>
+            </div>
+            <div id="sqlite-fields" hidden><label>Ruta del archivo SQLite<input name="archivo_sqlite" autocomplete="off" placeholder="/ruta/a/base.sqlite"></label></div>
+            <p class="muted form-hint" id="connection-password-state"></p>
+            <div class="action-row form-actions"><button class="secondary" id="test-connection" type="button">Probar conexión</button><button class="primary" type="submit">Guardar conexión</button></div>
+            <p id="connection-message" class="muted query-message" role="status" aria-live="polite"></p>
+          </form>
+        </div>
+        <div class="settings-tab-panel" id="tab-clocks" role="tabpanel" hidden>
+          <p class="muted">Agregá y configurá todos los relojes que consultará el sistema. El ID debe ser único.</p>
+          <div id="clock-list" class="clock-list"></div>
+          <div class="action-row"><button class="secondary" id="add-clock" type="button">Agregar reloj</button><button class="primary" id="save-clocks" type="button">Guardar relojes</button></div>
+          <p id="clocks-message" class="muted query-message" role="status" aria-live="polite"></p>
+        </div>
+        <div class="settings-tab-panel" id="tab-employees" role="tabpanel" hidden>
+          <p class="muted">Indicá la tabla y las columnas que identifican tarjeta, ID interno y nombre. Los valores actuales aparecen cargados en cada campo. La organización se selecciona desde el catálogo remoto.</p>
+          <form id="employees-form" class="settings-form mapping-grid">
+            <label>Tabla de empleados<input name="tabla" type="text" autocomplete="off" placeholder="Ej.: empleados" required></label>
+            <label>Columna número de reloj / tarjeta<input name="columna_id" type="text" autocomplete="off" placeholder="Ej.: n_reloj" required></label>
+            <label>Columna ID interno<input name="columna_id_interno" type="text" autocomplete="off" placeholder="Ej.: id" required></label>
+            <label>Columna nombre<input name="columna_nombre" type="text" autocomplete="off" placeholder="Ej.: nombre" required></label>
+            <label>Organización<select name="organizacion_id" id="employee-organization" required></select></label>
+            <div class="action-row form-actions"><button class="secondary" type="button" id="load-organizations">Actualizar organizaciones</button><button class="primary" type="submit">Guardar empleados</button></div>
+            <p id="employees-message" class="muted query-message" role="status" aria-live="polite"></p>
+          </form>
+        </div>
+        <div class="settings-tab-panel" id="tab-assistances" role="tabpanel" hidden>
+          <p class="muted">Indicá la tabla remota y sus columnas para guardar las marcaciones. Los valores actuales aparecen cargados en cada campo.</p>
+          <form id="assistances-form" class="settings-form mapping-grid">
+            <label>Tabla de marcaciones<input name="tabla" type="text" autocomplete="off" placeholder="Ej.: asistencia" required></label>
+            <label>Columna empleado<input name="columna_empleado" type="text" autocomplete="off" placeholder="Nombre de columna configurado" required></label>
+            <label>Columna fecha<input name="columna_fecha" type="text" autocomplete="off" placeholder="Nombre de columna configurado" required></label>
+            <label>Columna hora<input name="columna_hora" type="text" autocomplete="off" placeholder="Nombre de columna configurado" required></label>
+            <label>Columna tipo<input name="columna_tipo" type="text" autocomplete="off" placeholder="Nombre de columna configurado" required></label>
+            <label>Columna reloj<input name="columna_reloj" type="text" autocomplete="off" placeholder="Nombre de columna configurado" required></label>
+            <label>Columna verificación<input name="columna_c_ver" type="text" autocomplete="off" placeholder="Nombre de columna configurado" required></label>
+            <div class="action-row form-actions"><button class="primary" type="submit">Guardar marcaciones</button></div>
+            <p id="assistances-message" class="muted query-message" role="status" aria-live="polite"></p>
+          </form>
+        </div>
+      </details>
+    </section>
+    <section class="panel">
+      <details id="smtp-settings">
+        <summary><span><p class="eyebrow">CORREO</p><h2>Configuración SMTP</h2></span><span class="muted">Servidor remitente para claves</span></summary>
+        <p class="muted settings-help">La configuración se guarda localmente y se usa para enviar claves temporales. La contraseña SMTP no se muestra al volver a cargar.</p>
+        <form id="smtp-form" class="search-grid">
+          <label>Servidor SMTP<input name="host" id="smtp-host" maxlength="253" autocomplete="url" required></label>
+          <label>Puerto<input name="port" id="smtp-port" type="number" min="1" max="65535" value="587" required></label>
+          <label>Correo remitente<input name="sender" id="smtp-sender" type="email" maxlength="254" autocomplete="email" required></label>
+          <label>Usuario SMTP <span class="muted">(opcional)</span><input name="username" id="smtp-username" autocomplete="username"></label>
+          <label>Contraseña SMTP<input name="password" id="smtp-password" type="password" autocomplete="new-password" placeholder="Vacío conserva la guardada"></label>
+          <label>Cifrado<select name="tls_mode" id="smtp-tls-mode"><option value="starttls">STARTTLS</option><option value="ssl">SSL/TLS</option><option value="none">Sin cifrado (relay local)</option></select></label>
+          <label class="checkbox-label"><input name="clear_password" id="smtp-clear-password" type="checkbox"> Quitar la contraseña guardada</label>
+          <div class="action-row smtp-form-actions"><button class="primary" type="submit">Guardar correo</button><button class="secondary" id="test-smtp" type="button">Probar conexión</button></div>
+        </form>
+        <p id="smtp-password-state" class="muted" aria-live="polite"></p>
+        <div id="smtp-message" class="muted query-message" role="status" aria-live="polite"></div>
+      </details>
+    </section>
+    <section class="panel">
+      <details id="user-management">
+        <summary><span><p class="eyebrow">ADMINISTRACIÓN</p><h2>Usuarios</h2></span><span class="muted">Perfiles y claves de acceso</span></summary>
+        <p class="muted settings-help">Creá usuarios, cambiá sus perfiles y restablecé claves olvidadas. Las claves temporales se muestran una sola vez. Siempre debe quedar al menos un administrador activo.</p>
+        <form id="create-user-form" class="search-grid">
+          <label>Nuevo usuario<input name="username" minlength="3" maxlength="50" pattern="[A-Za-z0-9_.@-]+" autocomplete="off" required></label>
+          <label>Correo electrónico<input name="email" type="email" maxlength="254" autocomplete="email" required></label>
+          <label>Perfil
+            <select name="role" required>
+              <option value="operator">Operador</option>
+              <option value="admin">Administrador</option>
+            </select>
+          </label>
+          <button class="primary align-end" type="submit">Crear usuario</button>
+        </form>
+        <div id="users-message" class="muted query-message" role="status" aria-live="polite"></div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Usuario</th><th>Correo electrónico</th><th>Perfil</th><th>Estado</th><th>Acciones</th></tr></thead>
+            <tbody id="users-list"></tbody>
+          </table>
+        </div>
+        <output id="temporary-password" class="notice" hidden></output>
+      </details>
+    </section>
+    {% endif %}
+    <footer>© 2026 Conetia Software · ConectBioSync</footer>
+  </main>
+  <script>
+    window.APP_ROOT = {{ request.script_root|tojson }};
+    window.CSRF_TOKEN = {{ csrf|tojson }};
+  </script>
+  <script src="{{ url_for('static', filename='web.js') }}" defer></script>
+</body>
+</html>

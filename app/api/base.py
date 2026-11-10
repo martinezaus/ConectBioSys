@@ -2,7 +2,7 @@
 Interfaz común que deben implementar todos los adaptadores de relojes
 biométricos (Hikvision, ZKTeco, y los que se agreguen a futuro).
 
-Esto permite que el resto de la app (main.py, servicios de sincronización,
+Esto permite que el resto de la aplicación y los servicios de sincronización
 etc.) trate a cualquier reloj de la misma forma, sin importar el protocolo
 real que use por debajo (HTTP/ISAPI, TCP nativo, etc.).
 """

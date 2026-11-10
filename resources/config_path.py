@@ -1,35 +1,36 @@
 import os
-import sys
 import shutil
 import importlib.util
 
 from resources.marcas_relojes import ADAPTERS
 from resources.db_engines import ENGINES
 from sqlalchemy import create_engine
+def _get_config_base_dir():
+    """Return the per-user config directory on Windows and Linux."""
+    local_app_data = os.getenv("LOCALAPPDATA") or os.path.join(
+        os.path.expanduser("~"), "AppData", "Local"
+    )
+    return os.path.join(local_app_data, "ConectBioSync")
 
 def get_config_relojes_path():
-    """Devuelve la ruta persistente de config_relojes.py (fuera del .exe),
+    """Devuelve la ruta persistente de config_relojes.py,
     creando una copia por defecto la primera vez que corre la app."""
-    base_dir = os.path.join(os.getenv("LOCALAPPDATA"), "ConectBioSync")
+    base_dir = _get_config_base_dir()
     os.makedirs(base_dir, exist_ok=True)
     destino = os.path.join(base_dir, "config_relojes.py")
 
     if not os.path.exists(destino):
-        if hasattr(sys, "_MEIPASS"):
-            origen = os.path.join(sys._MEIPASS, "resources", "config_relojes.py")
-        else:
-            origen = os.path.join(os.path.dirname(__file__), "config_relojes.py")
+        origen = os.path.join(os.path.dirname(__file__), "config_relojes.py")
         if os.path.exists(origen):
             shutil.copy(origen, destino)
         else:
-            # No hay default empaquetado: creamos un archivo vacío válido
+            # Si falta la configuración inicial, crear un archivo válido.
             with open(destino, "w", encoding="utf-8") as f:
                 f.write('RELOJES = []\n')
     return destino
 
 def cargar_relojes():
-    """Lee resources/config_relojes.py desde la ruta persistente (AppData),
-    no desde el bundle del .exe."""
+    """Lee la configuración persistente de relojes del perfil del servidor."""
     ruta = get_config_relojes_path()
     spec = importlib.util.spec_from_file_location("config_relojes_runtime", ruta)
     modulo = importlib.util.module_from_spec(spec)
@@ -48,7 +49,7 @@ def crear_adaptador(config_reloj):
 # ---------- Conexión externa compartida (empleados + asistencias) ----------
 
 def get_config_conexion_path():
-	base_dir = os.path.join(os.getenv("LOCALAPPDATA"), "ConectBioSync")
+	base_dir = _get_config_base_dir()
 	os.makedirs(base_dir, exist_ok=True)
 	destino = os.path.join(base_dir, "config_conexion.py")
 	if not os.path.exists(destino):
@@ -130,7 +131,7 @@ def _validar_identificador_sql(valor):
 # ---------- Mapeo de tabla: EMPLEADOS (lectura) ----------
 
 def get_config_empleados_path():
-	base_dir = os.path.join(os.getenv("LOCALAPPDATA"), "ConectBioSync")
+	base_dir = _get_config_base_dir()
 	os.makedirs(base_dir, exist_ok=True)
 	destino = os.path.join(base_dir, "config_tabla_empleados.py")
 	if not os.path.exists(destino):
@@ -173,7 +174,7 @@ def guardar_config_empleados(config):
 # ---------- Mapeo de tabla: ASISTENCIAS (escritura) ----------
 
 def get_config_asistencias_path():
-	base_dir = os.path.join(os.getenv("LOCALAPPDATA"), "ConectBioSync")
+	base_dir = _get_config_base_dir()
 	os.makedirs(base_dir, exist_ok=True)
 	destino = os.path.join(base_dir, "config_tabla_asistencias.py")
 	if not os.path.exists(destino):

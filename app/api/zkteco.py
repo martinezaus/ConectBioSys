@@ -37,7 +37,7 @@ class ZKTecoAdapter(RelojAdapter):
             timeout=self.timeout,
             password=self.comm_key,
             force_udp=self.force_udp,
-            ommit_ping=False,
+            ommit_ping=True,
         )
         try:
             self._conn = zk.connect()
